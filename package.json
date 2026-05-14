@@ -7,13 +7,15 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-   "start": "node index.js",
+    "start": "node index.js",
     "dev": "nodemon index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
+    "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "mongoose": "^9.6.1",
     "nodemon": "^3.1.14"
   }
 }
