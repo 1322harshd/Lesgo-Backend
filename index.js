@@ -4,6 +4,8 @@ import mongoose from 'mongoose';
 import cors from 'cors';
 
 import userRoutes from './routes.js';
+import authRoutes from './authRoutes.js';
+import { protect } from './authMiddleware.js';
 
 const app= express()
 
@@ -23,6 +25,14 @@ app.use(express.json());
 
 //add new user route
 app.use('/users', userRoutes);
+
+app.use('/auth', authRoutes);
+
+// Example protected route:
+app.get('/profile', protect, async (req, res) => {
+  // req.user contains { userId, email }
+  res.json({ userId: req.user.userId, email: req.user.email });
+});
 
 // Connect to MongoDB first
 mongoose.connect(process.env.MONGO_DB_URI)
