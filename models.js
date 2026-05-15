@@ -20,6 +20,7 @@ const UserSchema = new Schema({
   },
 
   profilePicture: String,
+  contactNumber: String,
 
   homeArea: String,
   homeLat: Number,

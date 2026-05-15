@@ -6,6 +6,7 @@ import { User } from './models.js';
 const router = express.Router();
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+const JWT_SECRET = process.env.JWT_SECRET || 'lesgo-dev-secret';
 const client = new OAuth2Client(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET);
 
 function removeEmptyValues(data) {
@@ -63,19 +64,19 @@ async function getProfileFromIdToken(idToken) {
     throw new Error('GOOGLE_WEB_CLIENT_ID is required to verify Google ID tokens.');
   }
 
-    const ticket = await client.verifyIdToken({
-      idToken,
-      audience: GOOGLE_CLIENT_ID,
-    });
+  const ticket = await client.verifyIdToken({
+    idToken,
+    audience: GOOGLE_CLIENT_ID,
+  });
 
-    const { email, name, picture, sub: googleId } = ticket.getPayload();
+  const { email, name, picture, sub: googleId } = ticket.getPayload();
 
-    return {
-      googleId,
-        email,
-        name,
-        profilePicture: picture,
-        };
+  return {
+    googleId,
+    email,
+    name,
+    profilePicture: picture,
+  };
 }
 
 async function exchangeServerAuthCode(serverAuthCode) {
@@ -83,48 +84,82 @@ async function exchangeServerAuthCode(serverAuthCode) {
     return {};
   }
 
-  const { tokens } = await client.getToken(serverAuthCode);
+  try {
+    const { tokens } = await client.getToken(serverAuthCode);
 
-  return {
-    googleAccessToken: tokens.access_token,
-    googleRefreshToken: tokens.refresh_token,
-    googleTokenExpiry: tokens.expiry_date ? new Date(tokens.expiry_date) : undefined,
-    idToken: tokens.id_token,
-  };
+    return {
+      googleAccessToken: tokens.access_token,
+      googleRefreshToken: tokens.refresh_token,
+      googleTokenExpiry: tokens.expiry_date ? new Date(tokens.expiry_date) : undefined,
+      idToken: tokens.id_token,
+    };
+  } catch (error) {
+    console.warn('Google auth code exchange failed; continuing with app access token:', {
+      message: error.message,
+      code: error.code,
+      status: error.status,
+      googleError: error.response?.data?.error,
+    });
+
+    return {};
+  }
+}
+
+async function resolveGoogleProfile({ idToken, accessToken }) {
+  let idTokenError;
+
+  if (idToken) {
+    try {
+      return await getProfileFromIdToken(idToken);
+    } catch (error) {
+      idTokenError = error;
     }
+  }
 
-    router.post('/google', async (req, res) => {
+  if (accessToken) {
+    return getProfileFromAccessToken(accessToken);
+  }
+
+  throw idTokenError || new Error('Google token is required.');
+}
+
+router.post('/google', async (req, res) => {
   const {
+    authMode = 'login',
     idToken,
     accessToken,
     serverAuthCode,
     profile: requestProfile = {},
   } = req.body;
+  const isSignup = authMode === 'signup';
 
   try {
-    const exchanged = await exchangeServerAuthCode(serverAuthCode);
+    const exchanged = isSignup ? await exchangeServerAuthCode(serverAuthCode) : {};
     const effectiveIdToken = idToken || exchanged.idToken;
     const effectiveAccessToken = exchanged.googleAccessToken || accessToken;
     const googleTokenExpiry =
-      exchanged.googleTokenExpiry || (await getAccessTokenExpiry(effectiveAccessToken));
+      isSignup
+        ? exchanged.googleTokenExpiry || (await getAccessTokenExpiry(effectiveAccessToken))
+        : undefined;
 
-    let googleProfile;
-
-    if (effectiveIdToken) {
-      googleProfile = await getProfileFromIdToken(effectiveIdToken);
-    } else if (effectiveAccessToken) {
-      googleProfile = await getProfileFromAccessToken(effectiveAccessToken);
-    } else {
-      googleProfile = {
-        googleId: requestProfile.googleId,
-        email: requestProfile.email,
-        name: requestProfile.name,
-        profilePicture: requestProfile.profilePicture,
-      };
-    }
+    const googleProfile = await resolveGoogleProfile({
+      idToken: effectiveIdToken,
+      accessToken: effectiveAccessToken,
+    });
 
     if (!googleProfile.googleId || !googleProfile.email) {
       return res.status(400).json({ message: 'Google profile data is required.' });
+    }
+
+    const existingUser = await User.findOne({
+      $or: [{ googleId: googleProfile.googleId }, { email: googleProfile.email }],
+    });
+
+    if (!isSignup && !existingUser) {
+      return res.status(404).json({
+        code: 'ACCOUNT_NOT_FOUND',
+        message: 'No account found. Please sign up first.',
+      });
     }
 
     const userUpdate = removeEmptyValues({
@@ -135,20 +170,18 @@ async function exchangeServerAuthCode(serverAuthCode) {
       homeArea: requestProfile.homeArea,
       homeLat: requestProfile.homeLat,
       homeLng: requestProfile.homeLng,
-      googleAccessToken: effectiveAccessToken,
-      googleRefreshToken: exchanged.googleRefreshToken,
-      googleTokenExpiry,
+      googleAccessToken: isSignup ? effectiveAccessToken : undefined,
+      googleRefreshToken: isSignup ? exchanged.googleRefreshToken : undefined,
+      googleTokenExpiry: isSignup ? googleTokenExpiry : undefined,
     });
 
-    const user = await User.findOneAndUpdate(
-      { googleId: googleProfile.googleId },
-      { $set: userUpdate },
-      { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
-    );
+    const user = existingUser
+      ? await User.findByIdAndUpdate(existingUser._id, { $set: userUpdate }, { new: true, runValidators: true })
+      : await User.create(userUpdate);
 
     const token = jwt.sign(
       { userId: user._id, email: user.email },
-      process.env.JWT_SECRET || 'lesgo-dev-secret',
+      JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
 
@@ -161,9 +194,13 @@ async function exchangeServerAuthCode(serverAuthCode) {
       googleTokenExpiry: user.googleTokenExpiry,
     });
 
-    res.json({ token, user });
+    res.json({
+      token,
+      user,
+      authStatus: existingUser ? (isSignup ? 'signed_in_existing' : 'signed_in') : 'created',
+    });
   } catch (error) {
-console.error('Google auth failed:', error);
+    console.error('Google auth failed:', error);
     res.status(401).json({ message: error.message || 'Invalid Google token' });
   }
 });
