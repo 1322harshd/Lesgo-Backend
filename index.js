@@ -5,6 +5,7 @@ import cors from 'cors';
 
 import userRoutes from './routes.js';
 import authRoutes from './authRoutes.js';
+import socialRoutes from './socialRoutes.js';
 import { protect } from './authMiddleware.js';
 import dns from 'node:dns';
 dns.setServers(['1.1.1.1', '8.8.8.8']);
@@ -29,6 +30,8 @@ app.use(express.json());
 app.use('/users', userRoutes);
 
 app.use('/auth', authRoutes);
+
+app.use('/social', socialRoutes);
 
 // Example protected route:
 app.get('/profile', protect, async (req, res) => {

@@ -15,6 +15,19 @@ function removeEmptyValues(data) {
   );
 }
 
+async function generateFriendCode() {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const code = `LES-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+    const existingUser = await User.exists({ friendCode: code });
+
+    if (!existingUser) {
+      return code;
+    }
+  }
+
+  throw new Error('Could not generate a unique friend code.');
+}
+
 async function getProfileFromAccessToken(accessToken) {
   const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
     headers: {
@@ -176,8 +189,20 @@ router.post('/google', async (req, res) => {
     });
 
     const user = existingUser
-      ? await User.findByIdAndUpdate(existingUser._id, { $set: userUpdate }, { new: true, runValidators: true })
-      : await User.create(userUpdate);
+      ? await User.findByIdAndUpdate(
+          existingUser._id,
+          {
+            $set: {
+              ...userUpdate,
+              friendCode: existingUser.friendCode || await generateFriendCode(),
+            },
+          },
+          { new: true, runValidators: true }
+        )
+      : await User.create({
+          ...userUpdate,
+          friendCode: await generateFriendCode(),
+        });
 
     const token = jwt.sign(
       { userId: user._id, email: user.email },
