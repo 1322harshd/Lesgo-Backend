@@ -112,7 +112,60 @@ const MessageSchema = new Schema({
 
 MessageSchema.index({ conversationId: 1, createdAt: 1 });
 
+const PlanSchema = new Schema(
+  {
+    title: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    creatorId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    participantIds: [{
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    }],
+    conversationId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Conversation'
+    },
+    place: {
+      name: String,
+      address: String,
+      lat: Number,
+      lng: Number,
+      rating: Number,
+      googleMapsUri: String
+    },
+    startsAt: {
+      type: Date,
+      required: true
+    },
+    endsAt: {
+      type: Date,
+      required: true
+    },
+    activityType: {
+      type: String,
+      default: 'food'
+    },
+    status: {
+      type: String,
+      enum: ['pending', 'confirmed', 'cancelled'],
+      default: 'confirmed'
+    }
+  },
+  { timestamps: true }
+);
+
+PlanSchema.index({ participantIds: 1, startsAt: 1 });
+
 export const User = model('User', UserSchema);
 export const Friendship = model('Friendship', FriendshipSchema);
 export const Conversation = model('Conversation', ConversationSchema);
 export const Message = model('Message', MessageSchema);
+export const Plan = model('Plan', PlanSchema);
