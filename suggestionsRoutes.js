@@ -41,9 +41,14 @@ function userSummary(user) {
 }
 
 function planSummary(plan) {
+  const participantUsers = plan.participantIds?.filter(
+    (participant) => typeof participant === 'object' && participant.name
+  ) ?? [];
+
   return {
     id: plan._id.toString(),
     title: plan.title,
+    creator: typeof plan.creatorId === 'object' && plan.creatorId?.name ? userSummary(plan.creatorId) : undefined,
     location: plan.place?.name ?? 'Selected place',
     place: plan.place,
     scheduledAt: plan.startsAt,
@@ -53,7 +58,22 @@ function planSummary(plan) {
     participants: plan.participantIds?.map((participant) =>
       typeof participant === 'object' && participant.name ? participant.name : participant.toString()
     ) ?? [],
+    participantProfiles: participantUsers.map(userSummary),
     conversationId: plan.conversationId?.toString(),
+    status: plan.status,
+  };
+}
+
+function planInviteSummary(plan) {
+  return {
+    id: plan._id.toString(),
+    title: plan.title,
+    creator: typeof plan.creatorId === 'object' && plan.creatorId?.name ? userSummary(plan.creatorId) : undefined,
+    location: plan.place?.name ?? 'Selected place',
+    place: plan.place,
+    startsAt: plan.startsAt,
+    endsAt: plan.endsAt,
+    dateTimeLabel: formatDateTimeLabel(plan.startsAt),
     status: plan.status,
   };
 }
@@ -410,6 +430,8 @@ async function loadSuggestionUsers(currentUserId, participantIds) {
 
 router.get('/friends', async (req, res) => {
   try {
+    console.log('GET /suggestions/friends', { userId: req.user.userId });
+
     const currentUserId = toObjectId(req.user.userId);
     const friendships = await Friendship.find({
       status: 'accepted',
@@ -431,6 +453,12 @@ router.get('/friends', async (req, res) => {
 
 router.post('/hangout', async (req, res) => {
   try {
+    console.log('POST /suggestions/hangout', {
+      userId: req.user.userId,
+      participantCount: Array.isArray(req.body.participantIds) ? req.body.participantIds.length : 0,
+      activityType: req.body.activityType,
+    });
+
     const input = parseSuggestionInput(req.body);
     const users = await loadSuggestionUsers(req.user.userId, input.participantIds);
     const [calendarResults, places] = await Promise.all([
@@ -467,6 +495,12 @@ router.post('/hangout', async (req, res) => {
 
 router.post('/plans', async (req, res) => {
   try {
+    console.log('POST /suggestions/plans', {
+      userId: req.user.userId,
+      participantCount: Array.isArray(req.body.participantIds) ? req.body.participantIds.length : 0,
+      title: req.body.title,
+    });
+
     const participantIds = Array.isArray(req.body.participantIds) ? req.body.participantIds : [];
     const users = await loadSuggestionUsers(req.user.userId, participantIds);
     const startsAt = new Date(req.body.startsAt);
@@ -476,26 +510,18 @@ router.post('/plans', async (req, res) => {
       return res.status(400).json({ message: 'Valid plan start and end time are required.' });
     }
 
-    const participantObjectIds = users.map((user) => user._id);
-    let conversation = await Conversation.findOne({
-      type: 'group',
-      participants: { $all: participantObjectIds, $size: participantObjectIds.length },
-    });
-
-    if (!conversation) {
-      conversation = await Conversation.create({
-        type: 'group',
-        participants: participantObjectIds,
-      });
-    }
-
+    const creatorObjectId = toObjectId(req.user.userId);
+    const invitedObjectIds = users
+      .filter((user) => user._id.toString() !== req.user.userId)
+      .map((user) => user._id);
     const place = req.body.place ?? {};
     const title = String(req.body.title || `${place.name || 'Hangout'} plan`).trim();
     const plan = await Plan.create({
       title,
       creatorId: req.user.userId,
-      participantIds: participantObjectIds,
-      conversationId: conversation._id,
+      participantIds: [creatorObjectId],
+      invitedParticipantIds: invitedObjectIds,
+      acceptedParticipantIds: [creatorObjectId],
       place: {
         name: place.name,
         address: place.address,
@@ -507,19 +533,90 @@ router.post('/plans', async (req, res) => {
       startsAt,
       endsAt,
       activityType: req.body.activityType || 'food',
-      status: 'confirmed',
+      status: 'pending',
     });
+
+    const populatedPlan = await Plan.findById(plan._id).populate(['participantIds', 'creatorId']);
+
+    res.status(201).json({
+      plan: planSummary(populatedPlan),
+      invitedCount: invitedObjectIds.length,
+    });
+  } catch (error) {
+    res.status(error.statusCode || 400).json({ message: error.message });
+  }
+});
+
+router.get('/plan-invites', async (req, res) => {
+  try {
+    console.log('GET /suggestions/plan-invites', { userId: req.user.userId });
+
+    const plans = await Plan.find({
+      invitedParticipantIds: req.user.userId,
+      acceptedParticipantIds: { $ne: req.user.userId },
+      status: { $ne: 'cancelled' },
+    })
+      .populate('creatorId')
+      .sort({ startsAt: 1 });
+
+    res.json({ invites: plans.map(planInviteSummary) });
+  } catch (error) {
+    res.status(error.statusCode || 400).json({ message: error.message });
+  }
+});
+
+router.post('/plans/:id/accept', async (req, res) => {
+  try {
+    console.log('POST /suggestions/plans/:id/accept', {
+      userId: req.user.userId,
+      planId: req.params.id,
+    });
+
+    const plan = await Plan.findOne({
+      _id: req.params.id,
+      invitedParticipantIds: req.user.userId,
+      status: { $ne: 'cancelled' },
+    });
+
+    if (!plan) {
+      return res.status(404).json({ message: 'Plan invite not found.' });
+    }
+
+    const currentUserId = toObjectId(req.user.userId);
+    const participantIds = uniqueIds([...plan.participantIds, currentUserId]).map(toObjectId);
+    const acceptedParticipantIds = uniqueIds([...plan.acceptedParticipantIds, currentUserId]).map(toObjectId);
+
+    let conversation = plan.conversationId
+      ? await Conversation.findById(plan.conversationId)
+      : null;
+
+    if (!conversation) {
+      conversation = await Conversation.create({
+        title: plan.title,
+        type: 'group',
+        participants: participantIds,
+      });
+      plan.conversationId = conversation._id;
+    } else {
+      conversation.participants = participantIds;
+      await conversation.save();
+    }
+
+    plan.participantIds = participantIds;
+    plan.acceptedParticipantIds = acceptedParticipantIds;
+    plan.status = 'confirmed';
+    await plan.save();
 
     await Message.create({
       conversationId: conversation._id,
       senderId: req.user.userId,
-      content: `Plan created: ${title}`,
+      content: `Accepted plan invite: ${plan.title}`,
       readBy: [req.user.userId],
     });
 
-    const populatedPlan = await Plan.findById(plan._id).populate('participantIds');
+    const populatedPlan = await Plan.findById(plan._id).populate(['participantIds', 'creatorId']);
 
-    res.status(201).json({
+    res.json({
       plan: planSummary(populatedPlan),
       conversationId: conversation._id.toString(),
     });
@@ -530,11 +627,13 @@ router.post('/plans', async (req, res) => {
 
 router.get('/plans', async (req, res) => {
   try {
+    console.log('GET /suggestions/plans', { userId: req.user.userId });
+
     const plans = await Plan.find({
       participantIds: req.user.userId,
-      status: { $ne: 'cancelled' },
+      status: { $in: ['pending', 'confirmed'] },
     })
-      .populate('participantIds')
+      .populate(['participantIds', 'creatorId'])
       .sort({ startsAt: 1 });
 
     res.json({ plans: plans.map(planSummary) });

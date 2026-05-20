@@ -59,6 +59,7 @@ function messageSummary(message) {
 function conversationSummary(conversation) {
   return {
     id: conversation._id.toString(),
+    title: conversation.title,
     type: conversation.type,
     participants: conversation.participants.map(userSummary).filter(Boolean),
     createdAt: conversation.createdAt,
@@ -255,6 +256,8 @@ router.delete('/friends/:id', async (req, res) => {
 
 router.get('/conversations', async (req, res) => {
   try {
+    console.log('GET /social/conversations', { userId: req.user.userId });
+
     const conversations = await Conversation.find({
       participants: req.user.userId,
     })
@@ -269,6 +272,11 @@ router.get('/conversations', async (req, res) => {
 
 router.post('/conversations/direct', async (req, res) => {
   try {
+    console.log('POST /social/conversations/direct', {
+      userId: req.user.userId,
+      friendId: req.body.friendId,
+    });
+
     const currentUserId = toObjectId(req.user.userId);
     const friendId = toObjectId(req.body.friendId);
 
@@ -303,6 +311,11 @@ router.post('/conversations/direct', async (req, res) => {
 
 router.get('/conversations/:id/messages', async (req, res) => {
   try {
+    console.log('GET /social/conversations/:id/messages', {
+      userId: req.user.userId,
+      conversationId: req.params.id,
+    });
+
     const conversation = await ensureConversationParticipant(req.params.id, req.user.userId);
 
     if (!conversation) {
@@ -318,6 +331,12 @@ router.get('/conversations/:id/messages', async (req, res) => {
 
 router.post('/conversations/:id/messages', async (req, res) => {
   try {
+    console.log('POST /social/conversations/:id/messages', {
+      userId: req.user.userId,
+      conversationId: req.params.id,
+      hasContent: Boolean(req.body.content),
+    });
+
     const content = String(req.body.content || '').trim();
 
     if (!content) {

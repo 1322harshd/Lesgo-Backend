@@ -7,6 +7,7 @@ import userRoutes from './routes.js';
 import authRoutes from './authRoutes.js';
 import socialRoutes from './socialRoutes.js';
 import suggestionsRoutes from './suggestionsRoutes.js';
+import locationRoutes from './locationRoutes.js';
 import { protect } from './authMiddleware.js';
 import dns from 'node:dns';
 dns.setServers(['1.1.1.1', '8.8.8.8']);
@@ -15,6 +16,7 @@ const app= express()
 
 //setting PORT environment variable
 const PORT = process.env.PORT || 3002;
+const HOST = process.env.HOST || '0.0.0.0';
 
 // Configure CORS for frontend applications
 const allowedOrigins = process.env.FRONTEND_ORIGINS
@@ -27,6 +29,14 @@ app.use(cors({
 // Enable JSON request body parsing
 app.use(express.json());
 
+app.get('/health', (req, res) => {
+  res.json({
+    ok: true,
+    service: 'lesgo-backend',
+    port: PORT,
+  });
+});
+
 //add new user route
 app.use('/users', userRoutes);
 
@@ -35,6 +45,8 @@ app.use('/auth', authRoutes);
 app.use('/social', socialRoutes);
 
 app.use('/suggestions', suggestionsRoutes);
+
+app.use('/location', locationRoutes);
 
 // Example protected route:
 app.get('/profile', protect, async (req, res) => {
@@ -48,8 +60,8 @@ mongoose.connect(process.env.MONGO_DB_URI)
     console.log('Connected to MongoDB successfully');
     
     // Only start the server once the DB is ready
-    app.listen(PORT, () => {
-      console.log(`Server is running on port ${PORT}`);
+    app.listen(PORT, HOST, () => {
+      console.log(`Server is running on http://${HOST}:${PORT}`);
     });
   })
   .catch((err) => {

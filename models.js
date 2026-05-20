@@ -68,6 +68,10 @@ FriendshipSchema.index({ receiverId: 1, status: 1 });
 
 const ConversationSchema = new Schema(
   {
+    title: {
+      type: String,
+      trim: true
+    },
     participants: [{
       type: Schema.Types.ObjectId,
       ref: 'User',
@@ -128,6 +132,14 @@ const PlanSchema = new Schema(
       type: Schema.Types.ObjectId,
       ref: 'User',
       required: true
+    }],
+    invitedParticipantIds: [{
+      type: Schema.Types.ObjectId,
+      ref: 'User'
+    }],
+    acceptedParticipantIds: [{
+      type: Schema.Types.ObjectId,
+      ref: 'User'
     }],
     conversationId: {
       type: Schema.Types.ObjectId,
