@@ -3,12 +3,12 @@ import 'dotenv/config';
 import mongoose from 'mongoose';
 import cors from 'cors';
 
-import userRoutes from './routes.js';
-import authRoutes from './authRoutes.js';
-import socialRoutes from './socialRoutes.js';
-import suggestionsRoutes from './suggestionsRoutes.js';
-import locationRoutes from './locationRoutes.js';
-import { protect } from './authMiddleware.js';
+import userRoutes from './routes/userRoutes.js';
+import authRoutes from './routes/authRoutes.js';
+import socialRoutes from './routes/socialRoutes.js';
+import suggestionsRoutes from './routes/suggestionsRoutes.js';
+import locationRoutes from './routes/locationRoutes.js';
+import { protect } from './middleware/authMiddleware.js';
 import dns from 'node:dns';
 dns.setServers(['1.1.1.1', '8.8.8.8']);
 

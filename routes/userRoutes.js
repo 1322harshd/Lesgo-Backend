@@ -1,30 +1,8 @@
 import express from 'express';
-import { User } from './models.js';
-import { protect } from './authMiddleware.js';
+import { User } from '../models/appModels.js';
+import { protect } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
-
-// Add a new user
-router.post('/', async (req, res) => {
-  try {
-    const user = new User(req.body);
-    await user.save();
-    res.status(201).json(user);
-    console.log(res)
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-router.get('/google/:googleId', async (req, res) => {
-  try {
-    const user = await User.findOne({ googleId: req.params.googleId });
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    res.json(user);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
 
 // Update the authenticated user by ID
 router.put('/:id', protect, async (req, res) => {

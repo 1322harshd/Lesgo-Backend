@@ -2,6 +2,7 @@ import jwt from 'jsonwebtoken';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'lesgo-dev-secret';
 
+// Middleware to protect routes and ensure the user is authenticated
 export function protect(req, res, next) {
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) {

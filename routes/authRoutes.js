@@ -1,20 +1,24 @@
 import express from 'express';
 import { OAuth2Client } from 'google-auth-library';
 import jwt from 'jsonwebtoken';
-import { User } from './models.js';
+import { User } from '../models/appModels.js';
 
 const router = express.Router();
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const JWT_SECRET = process.env.JWT_SECRET || 'lesgo-dev-secret';
+
+//create a single OAuth2Client instance to reuse for all Google token verifications and exchanges
 const client = new OAuth2Client(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET);
 
+// utility function to remove undefined or null values from an object
 function removeEmptyValues(data) {
   return Object.fromEntries(
     Object.entries(data).filter(([, value]) => value !== undefined && value !== null)
   );
 }
 
+// generate a unique friend code in the format "LES-XXXXXX"
 async function generateFriendCode() {
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const code = `LES-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
@@ -28,6 +32,7 @@ async function generateFriendCode() {
   throw new Error('Could not generate a unique friend code.');
 }
 
+// fetch the user's Google profile using the access token
 async function getProfileFromAccessToken(accessToken) {
   const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
     headers: {
@@ -49,6 +54,7 @@ async function getProfileFromAccessToken(accessToken) {
   };
 }
 
+// fetch the expiry time of the access token from Google's tokeninfo endpoint
 async function getAccessTokenExpiry(accessToken) {
   if (!accessToken) {
     return undefined;
@@ -72,6 +78,7 @@ async function getAccessTokenExpiry(accessToken) {
   return new Date(Date.now() + expiresInSeconds * 1000);
 }
 
+// verify the ID token and extract the user's Google profile information
 async function getProfileFromIdToken(idToken) {
   if (!GOOGLE_CLIENT_ID) {
     throw new Error('GOOGLE_WEB_CLIENT_ID is required to verify Google ID tokens.');
@@ -136,6 +143,7 @@ async function resolveGoogleProfile({ idToken, accessToken }) {
   throw idTokenError || new Error('Google token is required.');
 }
 
+//authenticate or register a user using Google tokens
 router.post('/google', async (req, res) => {
   const {
     authMode = 'login',

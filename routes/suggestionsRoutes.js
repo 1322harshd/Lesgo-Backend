@@ -1,8 +1,8 @@
 import express from 'express';
 import { OAuth2Client } from 'google-auth-library';
 import mongoose from 'mongoose';
-import { protect } from './authMiddleware.js';
-import { Conversation, Friendship, Message, Plan, User } from './models.js';
+import { protect } from '../middleware/authMiddleware.js';
+import { Conversation, Friendship, Message, Plan, User } from '../models/appModels.js';
 
 const router = express.Router();
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;

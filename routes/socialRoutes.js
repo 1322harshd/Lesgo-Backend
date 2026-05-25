@@ -1,10 +1,11 @@
 import express from 'express';
 import mongoose from 'mongoose';
-import { protect } from './authMiddleware.js';
-import { Conversation, Friendship, Message, User } from './models.js';
+import { protect } from '../middleware/authMiddleware.js';
+import { Conversation, Friendship, Message, User } from '../models/appModels.js';
 
 const router = express.Router();
 
+//using protect middleware to ensure all routes require authentication
 router.use(protect);
 
 function toObjectId(id) {
