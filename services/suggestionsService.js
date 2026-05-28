@@ -1,10 +1,7 @@
-import express from 'express';
 import { OAuth2Client } from 'google-auth-library';
 import mongoose from 'mongoose';
-import { protect } from '../middleware/authMiddleware.js';
 import { Conversation, Friendship, Message, Plan, User } from '../models/appModels.js';
 
-const router = express.Router();
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY || process.env.GOOGLE_PLACES_API_KEY;
@@ -14,9 +11,7 @@ const WORK_DAY_START_HOUR = 9;
 const WORK_DAY_END_HOUR = 22;
 const MAX_SLOTS = 5;
 
-router.use(protect);
-
-function toObjectId(id) {
+export function toObjectId(id) {
   if (!mongoose.Types.ObjectId.isValid(id)) {
     return null;
   }
@@ -24,11 +19,7 @@ function toObjectId(id) {
   return new mongoose.Types.ObjectId(id);
 }
 
-function uniqueIds(ids) {
-  return [...new Set(ids.map((id) => id.toString()))];
-}
-
-function userSummary(user) {
+export function userSummary(user) {
   return {
     id: user._id.toString(),
     name: user.name,
@@ -40,7 +31,7 @@ function userSummary(user) {
   };
 }
 
-function planSummary(plan) {
+export function planSummary(plan) {
   const participantUsers = plan.participantIds?.filter(
     (participant) => typeof participant === 'object' && participant.name
   ) ?? [];
@@ -64,26 +55,16 @@ function planSummary(plan) {
   };
 }
 
-function planInviteSummary(plan) {
-  return {
-    id: plan._id.toString(),
-    title: plan.title,
-    creator: typeof plan.creatorId === 'object' && plan.creatorId?.name ? userSummary(plan.creatorId) : undefined,
-    location: plan.place?.name ?? 'Selected place',
-    place: plan.place,
-    startsAt: plan.startsAt,
-    endsAt: plan.endsAt,
-    dateTimeLabel: formatDateTimeLabel(plan.startsAt),
-    status: plan.status,
-  };
-}
-
-function formatDateTimeLabel(dateValue) {
+export function formatDateTimeLabel(dateValue) {
   return new Intl.DateTimeFormat('en-NZ', {
     weekday: 'short',
     hour: 'numeric',
     minute: '2-digit',
   }).format(new Date(dateValue));
+}
+
+function uniqueIds(ids) {
+  return [...new Set(ids.map((id) => id.toString()))];
 }
 
 async function assertAcceptedParticipants(currentUserId, participantIds) {
@@ -115,40 +96,6 @@ async function assertAcceptedParticipants(currentUserId, participantIds) {
     error.statusCode = 403;
     throw error;
   }
-}
-
-function parseSuggestionInput(body) {
-  const dateFrom = body.dateFrom ? new Date(body.dateFrom) : new Date();
-  const dateTo = body.dateTo ? new Date(body.dateTo) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-  const durationMinutes = Number(body.durationMinutes || 120);
-  const participantIds = Array.isArray(body.participantIds) ? body.participantIds : [];
-  const activityType = String(body.activityType || 'food').trim() || 'food';
-
-  if (!participantIds.length) {
-    const error = new Error('Choose at least one friend.');
-    error.statusCode = 400;
-    throw error;
-  }
-
-  if (!Number.isFinite(durationMinutes) || durationMinutes < 30 || durationMinutes > 480) {
-    const error = new Error('Duration must be between 30 minutes and 8 hours.');
-    error.statusCode = 400;
-    throw error;
-  }
-
-  if (Number.isNaN(dateFrom.getTime()) || Number.isNaN(dateTo.getTime()) || dateTo <= dateFrom) {
-    const error = new Error('Choose a valid date range.');
-    error.statusCode = 400;
-    throw error;
-  }
-
-  return {
-    dateFrom,
-    dateTo,
-    durationMinutes,
-    activityType,
-    participantIds,
-  };
 }
 
 async function getFreshGoogleAccessToken(user) {
@@ -428,251 +375,166 @@ async function loadSuggestionUsers(currentUserId, participantIds) {
   return users;
 }
 
-router.get('/friends', async (req, res) => {
-  try {
-    console.log('GET /suggestions/friends', { userId: req.user.userId });
+export async function getAcceptedFriends(currentUserId) {
+  const currentObjectId = toObjectId(currentUserId);
+  const friendships = await Friendship.find({
+    status: 'accepted',
+    $or: [{ requesterId: currentObjectId }, { receiverId: currentObjectId }],
+  }).populate(['requesterId', 'receiverId']);
 
-    const currentUserId = toObjectId(req.user.userId);
-    const friendships = await Friendship.find({
-      status: 'accepted',
-      $or: [{ requesterId: currentUserId }, { receiverId: currentUserId }],
-    }).populate(['requesterId', 'receiverId']);
-
-    const friends = friendships
-      .map((friendship) => {
-        const requesterId = friendship.requesterId._id.toString();
-        return requesterId === req.user.userId ? friendship.receiverId : friendship.requesterId;
-      })
-      .map(userSummary);
-
-    res.json({ friends });
-  } catch (error) {
-    res.status(error.statusCode || 400).json({ message: error.message });
-  }
-});
-
-router.post('/hangout', async (req, res) => {
-  try {
-    console.log('POST /suggestions/hangout', {
-      userId: req.user.userId,
-      participantCount: Array.isArray(req.body.participantIds) ? req.body.participantIds.length : 0,
-      activityType: req.body.activityType,
-    });
-
-    const input = parseSuggestionInput(req.body);
-    const users = await loadSuggestionUsers(req.user.userId, input.participantIds);
-    const [calendarResults, places] = await Promise.all([
-      Promise.all(users.map((user) => fetchBusyBlocks(user, input.dateFrom, input.dateTo))),
-      fetchPlaceSuggestions({ users, activityType: input.activityType }),
-    ]);
-    const slots = findCommonFreeSlots(
-      calendarResults,
-      input.dateFrom,
-      input.dateTo,
-      input.durationMinutes
-    );
-
-    const suggestions = slots.map((slot, index) => ({
-      id: `suggestion-${index + 1}`,
-      time: slot,
-      place: places[index % places.length],
-      participants: users.map(userSummary),
-      score: Math.max(70, 96 - index * 7),
-    }));
-
-    res.json({
-      suggestions,
-      calendarStatus: calendarResults.map((calendar) => ({
-        userId: calendar.userId,
-        calendarConnected: calendar.calendarConnected,
-        calendarError: calendar.calendarError,
-      })),
-    });
-  } catch (error) {
-    res.status(error.statusCode || 400).json({ message: error.message });
-  }
-});
-
-router.post('/plans', async (req, res) => {
-  try {
-    console.log('POST /suggestions/plans', {
-      userId: req.user.userId,
-      participantCount: Array.isArray(req.body.participantIds) ? req.body.participantIds.length : 0,
-      title: req.body.title,
-    });
-
-    const participantIds = Array.isArray(req.body.participantIds) ? req.body.participantIds : [];
-    const users = await loadSuggestionUsers(req.user.userId, participantIds);
-    const startsAt = new Date(req.body.startsAt);
-    const endsAt = new Date(req.body.endsAt);
-
-    if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime()) || endsAt <= startsAt) {
-      return res.status(400).json({ message: 'Valid plan start and end time are required.' });
-    }
-
-    const creatorObjectId = toObjectId(req.user.userId);
-    const invitedObjectIds = users
-      .filter((user) => user._id.toString() !== req.user.userId)
-      .map((user) => user._id);
-    const place = req.body.place ?? {};
-    const title = String(req.body.title || `${place.name || 'Hangout'} plan`).trim();
-    const plan = await Plan.create({
-      title,
-      creatorId: req.user.userId,
-      participantIds: [creatorObjectId],
-      invitedParticipantIds: invitedObjectIds,
-      acceptedParticipantIds: [creatorObjectId],
-      place: {
-        name: place.name,
-        address: place.address,
-        lat: place.lat,
-        lng: place.lng,
-        rating: place.rating,
-        googleMapsUri: place.googleMapsUri,
-      },
-      startsAt,
-      endsAt,
-      activityType: req.body.activityType || 'food',
-      status: 'pending',
-    });
-
-    const populatedPlan = await Plan.findById(plan._id).populate(['participantIds', 'creatorId']);
-
-    res.status(201).json({
-      plan: planSummary(populatedPlan),
-      invitedCount: invitedObjectIds.length,
-    });
-  } catch (error) {
-    res.status(error.statusCode || 400).json({ message: error.message });
-  }
-});
-
-router.get('/plan-invites', async (req, res) => {
-  try {
-    console.log('GET /suggestions/plan-invites', { userId: req.user.userId });
-
-    const plans = await Plan.find({
-      invitedParticipantIds: req.user.userId,
-      acceptedParticipantIds: { $ne: req.user.userId },
-      status: { $ne: 'cancelled' },
-      endsAt: { $gt: new Date() },
+  return friendships
+    .map((friendship) => {
+      const requesterId = friendship.requesterId._id.toString();
+      return requesterId === currentUserId ? friendship.receiverId : friendship.requesterId;
     })
-      .populate('creatorId')
-      .sort({ startsAt: 1 });
+    .map(userSummary);
+}
 
-    res.json({ invites: plans.map(planInviteSummary) });
-  } catch (error) {
-    res.status(error.statusCode || 400).json({ message: error.message });
+export async function suggestHangout(currentUserId, input) {
+  const dateFrom = input.dateFrom ? new Date(input.dateFrom) : new Date();
+  const dateTo = input.dateTo ? new Date(input.dateTo) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const durationMinutes = Number(input.durationMinutes || 120);
+  const participantIds = Array.isArray(input.participantIds) ? input.participantIds : [];
+  const activityType = String(input.activityType || 'food').trim() || 'food';
+
+  if (!participantIds.length) {
+    const error = new Error('Choose at least one friend.');
+    error.statusCode = 400;
+    throw error;
   }
-});
 
-router.post('/plans/:id/accept', async (req, res) => {
-  try {
-    console.log('POST /suggestions/plans/:id/accept', {
-      userId: req.user.userId,
-      planId: req.params.id,
-    });
-
-    const plan = await Plan.findOne({
-      _id: req.params.id,
-      invitedParticipantIds: req.user.userId,
-      status: { $ne: 'cancelled' },
-    });
-
-    if (!plan) {
-      return res.status(404).json({ message: 'Plan invite not found.' });
-    }
-
-    const currentUserId = toObjectId(req.user.userId);
-    const participantIds = uniqueIds([...plan.participantIds, currentUserId]).map(toObjectId);
-    const acceptedParticipantIds = uniqueIds([...plan.acceptedParticipantIds, currentUserId]).map(toObjectId);
-
-    let conversation = plan.conversationId
-      ? await Conversation.findById(plan.conversationId)
-      : null;
-
-    if (!conversation) {
-      conversation = await Conversation.create({
-        title: plan.title,
-        type: 'group',
-        participants: participantIds,
-      });
-      plan.conversationId = conversation._id;
-    } else {
-      conversation.participants = participantIds;
-      await conversation.save();
-    }
-
-    plan.participantIds = participantIds;
-    plan.acceptedParticipantIds = acceptedParticipantIds;
-    plan.status = 'confirmed';
-    await plan.save();
-
-    await Message.create({
-      conversationId: conversation._id,
-      senderId: req.user.userId,
-      content: `Accepted plan invite: ${plan.title}`,
-      readBy: [req.user.userId],
-    });
-
-    const populatedPlan = await Plan.findById(plan._id).populate(['participantIds', 'creatorId']);
-
-    res.json({
-      plan: planSummary(populatedPlan),
-      conversationId: conversation._id.toString(),
-    });
-  } catch (error) {
-    res.status(error.statusCode || 400).json({ message: error.message });
+  if (!Number.isFinite(durationMinutes) || durationMinutes < 30 || durationMinutes > 480) {
+    const error = new Error('Duration must be between 30 minutes and 8 hours.');
+    error.statusCode = 400;
+    throw error;
   }
-});
 
-router.get('/plans', async (req, res) => {
-  try {
-    console.log('GET /suggestions/plans', { userId: req.user.userId });
-
-    const plans = await Plan.find({
-      participantIds: req.user.userId,
-      status: { $in: ['pending', 'confirmed'] },
-      endsAt: { $gt: new Date() },
-    })
-      .populate(['participantIds', 'creatorId'])
-      .sort({ startsAt: 1 });
-
-    res.json({ plans: plans.map(planSummary) });
-  } catch (error) {
-    res.status(error.statusCode || 400).json({ message: error.message });
+  if (Number.isNaN(dateFrom.getTime()) || Number.isNaN(dateTo.getTime()) || dateTo <= dateFrom) {
+    const error = new Error('Choose a valid date range.');
+    error.statusCode = 400;
+    throw error;
   }
-});
 
-router.patch('/plans/:id/cancel', async (req, res) => {
-  try {
-    console.log('PATCH /suggestions/plans/:id/cancel', {
-      userId: req.user.userId,
-      planId: req.params.id,
+  const users = await loadSuggestionUsers(currentUserId, participantIds);
+  const [calendarResults, places] = await Promise.all([
+    Promise.all(users.map((user) => fetchBusyBlocks(user, dateFrom, dateTo))),
+    fetchPlaceSuggestions({ users, activityType }),
+  ]);
+  const slots = findCommonFreeSlots(calendarResults, dateFrom, dateTo, durationMinutes);
+
+  const suggestions = slots.map((slot, index) => ({
+    id: `suggestion-${index + 1}`,
+    time: slot,
+    place: places[index % places.length],
+    participants: users.map(userSummary),
+    score: Math.max(70, 96 - index * 7),
+  }));
+
+  return {
+    suggestions,
+    calendarStatus: calendarResults.map((calendar) => ({
+      userId: calendar.userId,
+      calendarConnected: calendar.calendarConnected,
+      calendarError: calendar.calendarError,
+    })),
+  };
+}
+
+export async function createPlan(currentUserId, input) {
+  const participantIds = Array.isArray(input.participantIds) ? input.participantIds : [];
+  const users = await loadSuggestionUsers(currentUserId, participantIds);
+  const startsAt = new Date(input.startsAt);
+  const endsAt = new Date(input.endsAt);
+
+  if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime()) || endsAt <= startsAt) {
+    const error = new Error('Valid plan start and end time are required.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const creatorObjectId = toObjectId(currentUserId);
+  const invitedObjectIds = users
+    .filter((user) => user._id.toString() !== currentUserId)
+    .map((user) => user._id);
+  const place = input.place ?? {};
+  const title = String(input.title || `${place.name || 'Hangout'} plan`).trim();
+  const plan = await Plan.create({
+    title,
+    creatorId: currentUserId,
+    participantIds: [creatorObjectId],
+    invitedParticipantIds: invitedObjectIds,
+    acceptedParticipantIds: [creatorObjectId],
+    place: {
+      name: place.name,
+      address: place.address,
+      lat: place.lat,
+      lng: place.lng,
+      rating: place.rating,
+      googleMapsUri: place.googleMapsUri,
+    },
+    startsAt,
+    endsAt,
+    activityType: input.activityType || 'food',
+    status: 'pending',
+  });
+
+  const populatedPlan = await Plan.findById(plan._id).populate(['participantIds', 'creatorId']);
+
+  return {
+    plan: planSummary(populatedPlan),
+    invitedCount: invitedObjectIds.length,
+  };
+}
+
+export async function acceptPlanInvite(currentUserId, planId) {
+  const plan = await Plan.findOne({
+    _id: planId,
+    invitedParticipantIds: currentUserId,
+    status: { $ne: 'cancelled' },
+  });
+
+  if (!plan) {
+    const error = new Error('Plan invite not found.');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const currentObjectId = toObjectId(currentUserId);
+  const participantIds = uniqueIds([...plan.participantIds, currentObjectId]).map(toObjectId);
+  const acceptedParticipantIds = uniqueIds([...plan.acceptedParticipantIds, currentObjectId]).map(toObjectId);
+
+  let conversation = plan.conversationId
+    ? await Conversation.findById(plan.conversationId)
+    : null;
+
+  if (!conversation) {
+    conversation = await Conversation.create({
+      title: plan.title,
+      type: 'group',
+      participants: participantIds,
     });
-
-    const plan = await Plan.findOneAndUpdate(
-      {
-        _id: req.params.id,
-        $or: [
-          { creatorId: req.user.userId },
-          { participantIds: req.user.userId },
-          { invitedParticipantIds: req.user.userId },
-        ],
-        status: { $ne: 'cancelled' },
-      },
-      { $set: { status: 'cancelled' } },
-      { new: true }
-    ).populate(['participantIds', 'creatorId']);
-
-    if (!plan) {
-      return res.status(404).json({ message: 'Plan not found.' });
-    }
-
-    res.json({ plan: planSummary(plan) });
-  } catch (error) {
-    res.status(error.statusCode || 400).json({ message: error.message });
+    plan.conversationId = conversation._id;
+  } else {
+    conversation.participants = participantIds;
+    await conversation.save();
   }
-});
 
-export default router;
+  plan.participantIds = participantIds;
+  plan.acceptedParticipantIds = acceptedParticipantIds;
+  plan.status = 'confirmed';
+  await plan.save();
+
+  await Message.create({
+    conversationId: conversation._id,
+    senderId: currentUserId,
+    content: `Accepted plan invite: ${plan.title}`,
+    readBy: [currentUserId],
+  });
+
+  const populatedPlan = await Plan.findById(plan._id).populate(['participantIds', 'creatorId']);
+
+  return {
+    plan: planSummary(populatedPlan),
+    conversationId: conversation._id.toString(),
+  };
+}

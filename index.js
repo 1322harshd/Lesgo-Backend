@@ -8,6 +8,7 @@ import authRoutes from './routes/authRoutes.js';
 import socialRoutes from './routes/socialRoutes.js';
 import suggestionsRoutes from './routes/suggestionsRoutes.js';
 import locationRoutes from './routes/locationRoutes.js';
+import agentRoutes from './routes/agentRoutes.js';
 import { protect } from './middleware/authMiddleware.js';
 import dns from 'node:dns';
 dns.setServers(['1.1.1.1', '8.8.8.8']);
@@ -47,6 +48,8 @@ app.use('/social', socialRoutes);
 app.use('/suggestions', suggestionsRoutes);
 
 app.use('/location', locationRoutes);
+
+app.use('/agent', agentRoutes);
 
 // Example protected route:
 app.get('/profile', protect, async (req, res) => {

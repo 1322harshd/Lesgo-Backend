@@ -176,8 +176,55 @@ const PlanSchema = new Schema(
 
 PlanSchema.index({ participantIds: 1, startsAt: 1 });
 
+const AgentConversationSchema = new Schema(
+  {
+    userId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    title: {
+      type: String,
+      trim: true,
+      default: 'AI planner'
+    },
+    status: {
+      type: String,
+      enum: ['active', 'completed'],
+      default: 'active'
+    },
+    messages: [{
+      role: {
+        type: String,
+        enum: ['user', 'assistant'],
+        required: true
+      },
+      content: {
+        type: String,
+        required: true,
+        trim: true
+      },
+      data: {
+        type: Schema.Types.Mixed
+      },
+      createdAt: {
+        type: Date,
+        default: Date.now
+      }
+    }],
+    agentState: {
+      type: Schema.Types.Mixed,
+      default: {}
+    }
+  },
+  { timestamps: true }
+);
+
+AgentConversationSchema.index({ userId: 1, updatedAt: -1 });
+
 export const User = model('User', UserSchema);
 export const Friendship = model('Friendship', FriendshipSchema);
 export const Conversation = model('Conversation', ConversationSchema);
 export const Message = model('Message', MessageSchema);
 export const Plan = model('Plan', PlanSchema);
+export const AgentConversation = model('AgentConversation', AgentConversationSchema);
