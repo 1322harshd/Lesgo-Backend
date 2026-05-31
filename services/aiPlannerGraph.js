@@ -7,6 +7,7 @@ import { createPlan, getAcceptedFriends, suggestHangout } from './suggestionsSer
 const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'gpt-5.4-mini';
 const MAX_CONTEXT_MESSAGES = 12;
 
+//defining 'Plannerstate' for shape of state data flowing through the graph
 const PlannerState = Annotation.Root({
   userId: Annotation(),
   conversation: Annotation(),
@@ -14,6 +15,7 @@ const PlannerState = Annotation.Root({
   result: Annotation(),
 });
 
+//creating new model for llm
 function createModel() {
   if (!process.env.OPENAI_API_KEY) {
     return null;
@@ -40,6 +42,7 @@ function extractJsonObject(content) {
 
   return JSON.parse(jsonText.slice(firstBrace, lastBrace + 1));
 }
+
 
 function normalizePlannerIntent(intent, userMessage) {
   const validActions = new Set(['ask_question', 'suggest_hangout', 'create_plan', 'general_reply']);
