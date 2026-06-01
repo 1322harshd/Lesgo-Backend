@@ -367,6 +367,8 @@ const plannerGraph = new StateGraph(PlannerState)
   .addEdge('planner', END)
   .compile();
 
+  //function to create new conversation in database 
+  //returns new conversation id and initial reply
 export async function startAgentConversation(userId) {
   const conversation = await AgentConversation.create({
     userId,
@@ -381,6 +383,7 @@ export async function startAgentConversation(userId) {
   };
 }
 
+//route for filtering user message, updating conversation between user and agent, invoking agent for response and finally giving response from agent
 export async function sendAgentMessage({ userId, conversationId, message }) {
   const trimmedMessage = String(message || '').trim();
 

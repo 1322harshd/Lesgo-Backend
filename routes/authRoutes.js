@@ -99,6 +99,7 @@ async function getProfileFromIdToken(idToken) {
   };
 }
 
+//function for acquiring access and refresh toke form google 'serverAuthCode'
 async function exchangeServerAuthCode(serverAuthCode) {
   if (!serverAuthCode || !GOOGLE_CLIENT_SECRET) {
     return {};
@@ -125,6 +126,7 @@ async function exchangeServerAuthCode(serverAuthCode) {
   }
 }
 
+//function for getting profile using available token from either 'idToken' or 'accessToken'
 async function resolveGoogleProfile({ idToken, accessToken }) {
   let idTokenError;
 
@@ -152,6 +154,7 @@ router.post('/google', async (req, res) => {
     serverAuthCode,
     profile: requestProfile = {},
   } = req.body;
+  
   const isSignup = authMode === 'signup';
 
   try {

@@ -38,7 +38,6 @@ app.get('/health', (req, res) => {
   });
 });
 
-//add new user route
 app.use('/users', userRoutes);
 
 app.use('/auth', authRoutes);
@@ -51,11 +50,6 @@ app.use('/location', locationRoutes);
 
 app.use('/agent', agentRoutes);
 
-// Example protected route:
-app.get('/profile', protect, async (req, res) => {
-  // req.user contains { userId, email }
-  res.json({ userId: req.user.userId, email: req.user.email });
-});
 
 // Connect to MongoDB first
 mongoose.connect(process.env.MONGO_DB_URI)

@@ -14,6 +14,7 @@ router.get('/health', (req, res) => {
   });
 });
 
+//route for starting conversation with agent by passing user detail to 'startAgentConversation' function
 router.post('/conversation/start', async (req, res) => {
   try {
     const result = await startAgentConversation(req.user.userId);
@@ -23,6 +24,7 @@ router.post('/conversation/start', async (req, res) => {
   }
 });
 
+//route to pass conversation to agent
 router.post('/chat', async (req, res) => {
   try {
     const result = await sendAgentMessage({
