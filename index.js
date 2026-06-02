@@ -66,16 +66,6 @@ app.use('/places', placesRoutes);
 
 app.use('/locations', placesRoutes);
 
-app.use('/api/location', locationRoutes);
-
-app.use('/api/places', placesRoutes);
-
-app.use('/api/locations', placesRoutes);
-
-app.use('/trending-locations', placesRoutes);
-
-app.use('/trending-places', placesRoutes);
-
 app.use('/agent', agentRoutes);
 
 app.use('/social/notifications', notificationsRoutes);
