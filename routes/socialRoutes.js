@@ -47,10 +47,18 @@ function friendshipSummary(friendship, currentUserId) {
 }
 
 function messageSummary(message) {
+  const sender = typeof message.senderId === 'object' && message.senderId?.name
+    ? userSummary(message.senderId)
+    : null;
+
   return {
     id: message._id.toString(),
     conversationId: message.conversationId.toString(),
-    senderId: message.senderId.toString(),
+    senderId: sender?.id || message.senderId?.toString() || null,
+    sender,
+    senderName: sender?.name || null,
+    type: message.type,
+    planId: message.planId?.toString() || null,
     content: message.content,
     readBy: message.readBy.map((id) => id.toString()),
     createdAt: message.createdAt,
@@ -323,7 +331,9 @@ router.get('/conversations/:id/messages', async (req, res) => {
       return res.status(404).json({ message: 'Conversation not found.' });
     }
 
-    const messages = await Message.find({ conversationId: conversation._id }).sort({ createdAt: 1 });
+    const messages = await Message.find({ conversationId: conversation._id })
+      .populate('senderId')
+      .sort({ createdAt: 1 });
     res.json({ messages: messages.map(messageSummary) });
   } catch (error) {
     res.status(400).json({ message: error.message });

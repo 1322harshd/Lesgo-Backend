@@ -96,8 +96,16 @@ const MessageSchema = new Schema({
   },
   senderId: {
     type: Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
+    ref: 'User'
+  },
+  type: {
+    type: String,
+    enum: ['user', 'system'],
+    default: 'user'
+  },
+  planId: {
+    type: Schema.Types.ObjectId,
+    ref: 'Plan'
   },
   content: {
     type: String,
@@ -169,6 +177,13 @@ const PlanSchema = new Schema(
       type: String,
       enum: ['pending', 'confirmed', 'cancelled'],
       default: 'confirmed'
+    },
+    cancelledBy: {
+      type: Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    cancelledAt: {
+      type: Date
     }
   },
   { timestamps: true }
@@ -222,9 +237,53 @@ const AgentConversationSchema = new Schema(
 
 AgentConversationSchema.index({ userId: 1, updatedAt: -1 });
 
+const NotificationSchema = new Schema(
+  {
+    type: {
+      type: String,
+      required: true,
+      enum: ['plan_cancelled']
+    },
+    recipientId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    actorId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    planId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Plan',
+      required: true
+    },
+    title: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    message: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    read: {
+      type: Boolean,
+      default: false
+    }
+  },
+  { timestamps: true }
+);
+
+NotificationSchema.index({ recipientId: 1, read: 1, createdAt: -1 });
+NotificationSchema.index({ planId: 1, type: 1 });
+
 export const User = model('User', UserSchema);
 export const Friendship = model('Friendship', FriendshipSchema);
 export const Conversation = model('Conversation', ConversationSchema);
 export const Message = model('Message', MessageSchema);
 export const Plan = model('Plan', PlanSchema);
 export const AgentConversation = model('AgentConversation', AgentConversationSchema);
+export const Notification = model('Notification', NotificationSchema);
