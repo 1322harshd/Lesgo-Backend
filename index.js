@@ -9,7 +9,7 @@ import socialRoutes from './routes/socialRoutes.js';
 import suggestionsRoutes from './routes/suggestionsRoutes.js';
 import locationRoutes from './routes/locationRoutes.js';
 import agentRoutes from './routes/agentRoutes.js';
-import { protect } from './middleware/authMiddleware.js';
+import notificationsRoutes from './routes/notificationsRoutes.js';
 import dns from 'node:dns';
 dns.setServers(['1.1.1.1', '8.8.8.8']);
 
@@ -44,12 +44,17 @@ app.use('/auth', authRoutes);
 
 app.use('/social', socialRoutes);
 
+app.use('/suggestions/notifications', notificationsRoutes);
+
 app.use('/suggestions', suggestionsRoutes);
 
 app.use('/location', locationRoutes);
 
 app.use('/agent', agentRoutes);
 
+app.use('/social/notifications', notificationsRoutes);
+
+app.use('/notifications', notificationsRoutes);
 
 // Connect to MongoDB first
 mongoose.connect(process.env.MONGO_DB_URI)
