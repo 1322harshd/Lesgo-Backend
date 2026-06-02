@@ -50,6 +50,10 @@ app.use('/suggestions', suggestionsRoutes);
 
 app.use('/location', locationRoutes);
 
+app.use('/places', placesRoutes);
+
+app.use('/locations', placesRoutes);
+
 app.use('/agent', agentRoutes);
 
 app.use('/social/notifications', notificationsRoutes);
