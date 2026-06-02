@@ -1,14 +1,7 @@
 import express from 'express';
 import { protect } from '../middleware/authMiddleware.js';
-import {
-  acceptPlanInvite,
-  cancelPlan,
-  createPlan,
-  getAcceptedFriends,
-  getPlanInvites,
-  getUserPlans,
-  suggestHangout,
-} from '../services/suggestionsService.js';
+import { Conversation, Friendship, Message, Notification, Plan, User } from '../models/appModels.js';
+import { getFreshGoogleAccessToken } from '../services/googleAuthService.js';
 
 const router = express.Router();
 
@@ -97,7 +90,7 @@ router.post('/plans/:id/accept', async (req, res) => {
   }
 });
 
-<<<<<<< HEAD
+
 async function cancelPlan(req, res) {
   try {
     console.log(`${req.method} /suggestions/plans/:id/cancel`, {
@@ -185,9 +178,7 @@ router.post('/plans/:id/cancel', cancelPlan);
 router.patch('/plans/:id/cancel', cancelPlan);
 router.delete('/plans/:id', cancelPlan);
 
-=======
 //route for getting all the plan in which current user is participant
->>>>>>> 061be10 (streamline suggestions service and routes for improved maintainability)
 router.get('/plans', async (req, res) => {
   try {
     console.log('GET /suggestions/plans', { userId: req.user.userId });
@@ -200,8 +191,6 @@ router.get('/plans', async (req, res) => {
   }
 });
 
-<<<<<<< HEAD
-=======
 //route for canceling plan
 router.patch('/plans/:id/cancel', async (req, res) => {
   try {
@@ -218,5 +207,4 @@ router.patch('/plans/:id/cancel', async (req, res) => {
   }
 });
 
->>>>>>> 061be10 (streamline suggestions service and routes for improved maintainability)
 export default router;
