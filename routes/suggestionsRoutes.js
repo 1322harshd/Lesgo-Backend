@@ -1,14 +1,7 @@
 import express from 'express';
 import { protect } from '../middleware/authMiddleware.js';
-import {
-  acceptPlanInvite,
-  cancelPlan,
-  createPlan,
-  getAcceptedFriends,
-  getPlanInvites,
-  getUserPlans,
-  suggestHangout,
-} from '../services/suggestionsService.js';
+import { Conversation, Friendship, Message, Notification, Plan, User } from '../models/appModels.js';
+import { getFreshGoogleAccessToken } from '../services/googleAuthService.js';
 
 const router = express.Router();
 
@@ -97,7 +90,93 @@ router.post('/plans/:id/accept', async (req, res) => {
   }
 });
 
-//route for getting all the plan in which current user is participant
+async function cancelPlan(req, res) {
+  try {
+    console.log(`${req.method} /suggestions/plans/:id/cancel`, {
+      userId: req.user.userId,
+      planId: req.params.id,
+    });
+
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(404).json({ message: 'Plan not found.' });
+    }
+
+    const cancellingUserId = toObjectId(req.user.userId);
+    const plan = await Plan.findById(req.params.id);
+
+    if (!plan) {
+      return res.status(404).json({ message: 'Plan not found.' });
+    }
+
+    const involvedUserIds = uniqueIds([
+      plan.creatorId,
+      ...plan.participantIds,
+      ...plan.invitedParticipantIds,
+      ...plan.acceptedParticipantIds,
+    ]);
+    const isAllowedToCancel = involvedUserIds.includes(req.user.userId);
+
+    if (!isAllowedToCancel) {
+      return res.status(403).json({ message: 'You are not allowed to cancel this plan.' });
+    }
+
+    if (plan.status === 'cancelled') {
+      return res.status(409).json({ message: 'Plan is already cancelled.' });
+    }
+
+    const cancellingUser = await User.findById(cancellingUserId);
+    const cancellingUserName = cancellingUser?.name || 'Someone';
+    const notifiedUserIds = involvedUserIds.filter((userId) => userId !== req.user.userId);
+
+    plan.status = 'cancelled';
+    plan.cancelledBy = cancellingUserId;
+    plan.cancelledAt = new Date();
+    await plan.save();
+
+    if (plan.conversationId) {
+      await Message.create({
+        conversationId: plan.conversationId,
+        senderId: cancellingUserId,
+        type: 'system',
+        planId: plan._id,
+        content: `Plan cancelled by ${cancellingUserName}`,
+        readBy: [req.user.userId],
+      });
+      await Conversation.findByIdAndUpdate(plan.conversationId, { $set: { updatedAt: new Date() } });
+    }
+
+    if (notifiedUserIds.length) {
+      await Notification.insertMany(
+        notifiedUserIds.map((recipientId) => ({
+          type: 'plan_cancelled',
+          recipientId,
+          actorId: cancellingUserId,
+          planId: plan._id,
+          title: 'Plan cancelled',
+          message: `${cancellingUserName} cancelled ${plan.title}`,
+          read: false,
+        }))
+      );
+    }
+
+    res.json({
+      message: 'Plan cancelled',
+      planId: plan._id.toString(),
+      cancelledBy: {
+        id: req.user.userId,
+        name: cancellingUserName,
+      },
+      notifiedCount: notifiedUserIds.length,
+    });
+  } catch (error) {
+    res.status(error.statusCode || 400).json({ message: error.message });
+  }
+}
+
+router.post('/plans/:id/cancel', cancelPlan);
+router.patch('/plans/:id/cancel', cancelPlan);
+router.delete('/plans/:id', cancelPlan);
+
 router.get('/plans', async (req, res) => {
   try {
     console.log('GET /suggestions/plans', { userId: req.user.userId });
@@ -109,25 +188,5 @@ router.get('/plans', async (req, res) => {
     res.status(error.statusCode || 400).json({ message: error.message });
   }
 });
-
-//route for canceling plan
-async function cancelPlanRequest(req, res) {
-  try {
-    console.log(`${req.method} /suggestions/plans/:id/cancel`, {
-      userId: req.user.userId,
-      planId: req.params.id,
-    });
-
-    const plan = await cancelPlan(req.user.userId, req.params.id);
-
-    res.json({ plan });
-  } catch (error) {
-    res.status(error.statusCode || 400).json({ message: error.message });
-  }
-}
-
-router.post('/plans/:id/cancel', cancelPlanRequest);
-router.patch('/plans/:id/cancel', cancelPlanRequest);
-router.delete('/plans/:id', cancelPlanRequest);
 
 export default router;
