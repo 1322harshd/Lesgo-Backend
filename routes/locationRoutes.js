@@ -1,4 +1,5 @@
 import express from 'express';
+import { getTrendingPlaces } from '../services/placesService.js';
 
 const router = express.Router();
 
@@ -63,6 +64,26 @@ router.get('/geocode', async (req, res) => {
   } catch (error) {
     const statusCode = error.message?.startsWith('City not found') ? 404 : 400;
     res.status(statusCode).json({ message: error.message || 'Could not geocode area.' });
+  }
+});
+
+router.get('/trending', async (req, res) => {
+  try {
+    console.log('GET /location/trending', {
+      lat: req.query.lat,
+      lng: req.query.lng,
+      homeArea: req.query.homeArea,
+    });
+
+    const places = await getTrendingPlaces({
+      lat: req.query.lat,
+      lng: req.query.lng,
+      homeArea: req.query.homeArea,
+    });
+
+    res.json(places);
+  } catch (error) {
+    res.status(error.statusCode || 400).json({ message: error.message });
   }
 });
 
