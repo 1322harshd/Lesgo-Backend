@@ -10,7 +10,6 @@ import suggestionsRoutes from './routes/suggestionsRoutes.js';
 import locationRoutes from './routes/locationRoutes.js';
 import agentRoutes from './routes/agentRoutes.js';
 import notificationsRoutes from './routes/notificationsRoutes.js';
-import placesRoutes from './routes/placesRoutes.js';
 import dns from 'node:dns';
 dns.setServers(['1.1.1.1', '8.8.8.8']);
 
