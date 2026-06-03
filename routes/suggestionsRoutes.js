@@ -1,7 +1,14 @@
 import express from 'express';
 import { protect } from '../middleware/authMiddleware.js';
-import { Conversation, Friendship, Message, Notification, Plan, User } from '../models/appModels.js';
-import { getFreshGoogleAccessToken } from '../services/googleAuthService.js';
+import {
+  acceptPlanInvite,
+  cancelPlan,
+  createPlan,
+  getAcceptedFriends,
+  getPlanInvites,
+  getUserPlans,
+  suggestHangout,
+} from '../services/suggestionsService.js';
 
 const router = express.Router();
 
@@ -90,7 +97,6 @@ router.post('/plans/:id/accept', async (req, res) => {
   }
 });
 
-
 async function cancelPlan(req, res) {
   try {
     console.log(`${req.method} /suggestions/plans/:id/cancel`, {
@@ -178,6 +184,7 @@ router.post('/plans/:id/cancel', cancelPlan);
 router.patch('/plans/:id/cancel', cancelPlan);
 router.delete('/plans/:id', cancelPlan);
 
+
 //route for getting all the plan in which current user is participant
 router.get('/plans', async (req, res) => {
   try {
@@ -190,6 +197,23 @@ router.get('/plans', async (req, res) => {
     res.status(error.statusCode || 400).json({ message: error.message });
   }
 });
+
+//route for canceling plan
+router.patch('/plans/:id/cancel', async (req, res) => {
+  try {
+    console.log('PATCH /suggestions/plans/:id/cancel', {
+      userId: req.user.userId,
+      planId: req.params.id,
+    });
+
+    const plan = await cancelPlan(req.user.userId, req.params.id);
+
+    res.json({ plan });
+  } catch (error) {
+    res.status(error.statusCode || 400).json({ message: error.message });
+  }
+});
+
 
 //route for canceling plan
 router.patch('/plans/:id/cancel', async (req, res) => {
