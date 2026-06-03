@@ -8,6 +8,7 @@ const WORK_DAY_START_HOUR = 9;
 const WORK_DAY_END_HOUR = 22;
 const MAX_SLOTS = 5;
 
+// Converts incoming string ids into MongoDB ObjectIds, and returns null for invalid ids.
 export function toObjectId(id) {
   if (!mongoose.Types.ObjectId.isValid(id)) {
     return null;
@@ -16,6 +17,7 @@ export function toObjectId(id) {
   return new mongoose.Types.ObjectId(id);
 }
 
+// Keeps user responses small and safe by only returning fields the frontend needs.
 export function userSummary(user) {
   return {
     id: user._id.toString(),
@@ -28,6 +30,7 @@ export function userSummary(user) {
   };
 }
 
+// Shapes a plan document into the format used by the frontend plan screens.
 export function planSummary(plan) {
   const participantUsers = plan.participantIds?.filter(
     (participant) => typeof participant === 'object' && participant.name
@@ -52,6 +55,22 @@ export function planSummary(plan) {
   };
 }
 
+// Plan invite cards need less data than full plans, so they get a smaller summary.
+function planInviteSummary(plan) {
+  return {
+    id: plan._id.toString(),
+    title: plan.title,
+    creator: typeof plan.creatorId === 'object' && plan.creatorId?.name ? userSummary(plan.creatorId) : undefined,
+    location: plan.place?.name ?? 'Selected place',
+    place: plan.place,
+    startsAt: plan.startsAt,
+    endsAt: plan.endsAt,
+    dateTimeLabel: formatDateTimeLabel(plan.startsAt),
+    status: plan.status,
+  };
+}
+
+// Creates the short readable time label shown beside suggestions and plans.
 export function formatDateTimeLabel(dateValue) {
   return new Intl.DateTimeFormat('en-NZ', {
     weekday: 'short',
@@ -60,10 +79,12 @@ export function formatDateTimeLabel(dateValue) {
   }).format(new Date(dateValue));
 }
 
+// Removes duplicate ids even when some are ObjectIds and some are strings.
 function uniqueIds(ids) {
   return [...new Set(ids.map((id) => id.toString()))];
 }
 
+// Makes sure suggestions and plans can only include people who are accepted friends.
 async function assertAcceptedParticipants(currentUserId, participantIds) {
   const otherIds = participantIds.filter((id) => id.toString() !== currentUserId.toString());
 
@@ -95,6 +116,9 @@ async function assertAcceptedParticipants(currentUserId, participantIds) {
   }
 }
 
+// Reads a user's Google Calendar free/busy data for the requested date range.
+// If their calendar is not connected or Google fails, we treat them as having no busy blocks
+// and report the connection status back to the frontend.
 async function fetchBusyBlocks(user, timeMin, timeMax) {
   const accessToken = await getFreshGoogleAccessToken(user);
 
@@ -141,6 +165,8 @@ async function fetchBusyBlocks(user, timeMin, timeMax) {
   };
 }
 
+// Builds the basic "we are willing to suggest plans during these hours" windows.
+// Calendar busy blocks are removed later; this only creates daily 9am-10pm windows.
 function buildDailyWindows(dateFrom, dateTo) {
   const windows = [];
   const cursor = new Date(dateFrom);
@@ -166,6 +192,7 @@ function buildDailyWindows(dateFrom, dateTo) {
   return windows;
 }
 
+// Takes broad available windows and cuts out any time that overlaps calendar events.
 function subtractBusyBlocks(windows, busyBlocks) {
   return busyBlocks.reduce((freeWindows, busy) => {
     const busyStart = busy.start.getTime();
@@ -194,6 +221,8 @@ function subtractBusyBlocks(windows, busyBlocks) {
   }, windows);
 }
 
+// Finds the overlapping parts between two sets of available windows.
+// This is how we keep narrowing the result until only times everyone can attend remain.
 function intersectWindows(firstWindows, secondWindows) {
   const intersections = [];
 
@@ -211,6 +240,7 @@ function intersectWindows(firstWindows, secondWindows) {
   return intersections;
 }
 
+// Combines the calendar results for all participants into a short list of usable suggestions.
 function findCommonFreeSlots(calendarResults, dateFrom, dateTo, durationMinutes) {
   const durationMs = durationMinutes * 60 * 1000;
   const dailyWindows = buildDailyWindows(dateFrom, dateTo);
@@ -232,6 +262,8 @@ function findCommonFreeSlots(calendarResults, dateFrom, dateTo, durationMinutes)
     }));
 }
 
+// Finds the average home location for the group so place suggestions are roughly central.
+// If nobody has a saved location, the app falls back to Auckland CBD.
 function calculateMidpoint(users) {
   const locatedUsers = users.filter(
     (user) => Number.isFinite(user.homeLat) && Number.isFinite(user.homeLng)
@@ -247,6 +279,7 @@ function calculateMidpoint(users) {
   };
 }
 
+// Converts app-level activity names into Google Places API place types.
 function placesTypesForActivity(activityType) {
   const typeMap = {
     coffee: ['cafe'],
@@ -258,6 +291,7 @@ function placesTypesForActivity(activityType) {
   return typeMap[activityType] ?? typeMap.food;
 }
 
+// Looks for nearby places that match the activity type around the group's midpoint.
 async function fetchPlaceSuggestions({ users, activityType }) {
   const midpoint = calculateMidpoint(users);
 
@@ -310,6 +344,7 @@ async function fetchPlaceSuggestions({ users, activityType }) {
   }));
 }
 
+// Gives the frontend a usable placeholder when Places API is not configured or has no results.
 function fallbackPlaces(midpoint, activityType) {
   const label = activityType === 'coffee' ? 'Cafe' : activityType === 'activity' ? 'Activity Spot' : 'Restaurant';
 
@@ -325,6 +360,7 @@ function fallbackPlaces(midpoint, activityType) {
   ];
 }
 
+// Loads the current user plus selected friends, after checking everyone is allowed.
 async function loadSuggestionUsers(currentUserId, participantIds) {
   const objectIds = uniqueIds([currentUserId, ...participantIds])
     .map(toObjectId)
@@ -343,6 +379,7 @@ async function loadSuggestionUsers(currentUserId, participantIds) {
   return users;
 }
 
+// Returns the accepted friends that the current user can include in suggestions.
 export async function getAcceptedFriends(currentUserId) {
   const currentObjectId = toObjectId(currentUserId);
   const friendships = await Friendship.find({
@@ -358,6 +395,9 @@ export async function getAcceptedFriends(currentUserId) {
     .map(userSummary);
 }
 
+// Main suggestion workflow used by both the HTTP route and the AI planner.
+// It validates input, loads users, fetches calendars and places, then pairs each time slot
+// with a suggested place.
 export async function suggestHangout(currentUserId, input) {
   const dateFrom = input.dateFrom ? new Date(input.dateFrom) : new Date();
   const dateTo = input.dateTo ? new Date(input.dateTo) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
@@ -408,6 +448,7 @@ export async function suggestHangout(currentUserId, input) {
   };
 }
 
+// Creates a pending plan from a selected suggestion and invites the other participants.
 export async function createPlan(currentUserId, input) {
   const participantIds = Array.isArray(input.participantIds) ? input.participantIds : [];
   const users = await loadSuggestionUsers(currentUserId, participantIds);
@@ -454,6 +495,7 @@ export async function createPlan(currentUserId, input) {
   };
 }
 
+// Accepts a plan invite, adds the user to the plan, and creates or updates the group chat.
 export async function acceptPlanInvite(currentUserId, planId) {
   const plan = await Plan.findOne({
     _id: planId,
@@ -505,4 +547,56 @@ export async function acceptPlanInvite(currentUserId, planId) {
     plan: planSummary(populatedPlan),
     conversationId: conversation._id.toString(),
   };
+}
+
+// Returns upcoming plan invites that the current user has not accepted yet.
+export async function getPlanInvites(currentUserId) {
+  const plans = await Plan.find({
+    invitedParticipantIds: currentUserId,
+    acceptedParticipantIds: { $ne: currentUserId },
+    status: { $ne: 'cancelled' },
+    endsAt: { $gt: new Date() },
+  })
+    .populate('creatorId')
+    .sort({ startsAt: 1 });
+
+  return plans.map(planInviteSummary);
+}
+
+// Returns upcoming active plans where the current user is already a participant.
+export async function getUserPlans(currentUserId) {
+  const plans = await Plan.find({
+    participantIds: currentUserId,
+    status: { $in: ['pending', 'confirmed'] },
+    endsAt: { $gt: new Date() },
+  })
+    .populate(['participantIds', 'creatorId'])
+    .sort({ startsAt: 1 });
+
+  return plans.map(planSummary);
+}
+
+// Lets creators, participants, or invited users cancel a plan they are connected to.
+export async function cancelPlan(currentUserId, planId) {
+  const plan = await Plan.findOneAndUpdate(
+    {
+      _id: planId,
+      $or: [
+        { creatorId: currentUserId },
+        { participantIds: currentUserId },
+        { invitedParticipantIds: currentUserId },
+      ],
+      status: { $ne: 'cancelled' },
+    },
+    { $set: { status: 'cancelled' } },
+    { new: true }
+  ).populate(['participantIds', 'creatorId']);
+
+  if (!plan) {
+    const error = new Error('Plan not found.');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  return planSummary(plan);
 }

@@ -8,6 +8,7 @@ const router = express.Router();
 //using protect middleware to ensure all routes require authentication
 router.use(protect);
 
+//prevents error from invalid id's
 function toObjectId(id) {
   if (!mongoose.Types.ObjectId.isValid(id)) {
     return null;
@@ -16,6 +17,7 @@ function toObjectId(id) {
   return new mongoose.Types.ObjectId(id);
 }
 
+//helper function to pick only safe fields to send to the frontend
 function userSummary(user) {
   if (!user) {
     return null;
@@ -31,6 +33,7 @@ function userSummary(user) {
   };
 }
 
+//helper functionn for shaping friendship document for frontend
 function friendshipSummary(friendship, currentUserId) {
   const requester = userSummary(friendship.requesterId);
   const receiver = userSummary(friendship.receiverId);
@@ -46,6 +49,7 @@ function friendshipSummary(friendship, currentUserId) {
   };
 }
 
+//helper function for shaping message document for frontend converting MongoDB ObjectId into string which can be used by frontend
 function messageSummary(message) {
   const sender = typeof message.senderId === 'object' && message.senderId?.name
     ? userSummary(message.senderId)
@@ -65,6 +69,7 @@ function messageSummary(message) {
   };
 }
 
+//helper functionf for shaping conversation document for frontend
 function conversationSummary(conversation) {
   return {
     id: conversation._id.toString(),
@@ -76,6 +81,7 @@ function conversationSummary(conversation) {
   };
 }
 
+//helper function for looking up friendship between two people
 async function findFriendship(userId, otherUserId, status) {
   return Friendship.findOne({
     status,
@@ -86,6 +92,7 @@ async function findFriendship(userId, otherUserId, status) {
   });
 }
 
+//security check to ensure current user is actually a participant in that conversation
 async function ensureConversationParticipant(conversationId, userId) {
   const conversation = await Conversation.findOne({
     _id: conversationId,
@@ -99,6 +106,7 @@ async function ensureConversationParticipant(conversationId, userId) {
   return conversation;
 }
 
+//route for looking a user from their friend code
 router.get('/lookup/:friendCode', async (req, res) => {
   try {
     const friendCode = req.params.friendCode.trim().toUpperCase();
@@ -118,6 +126,7 @@ router.get('/lookup/:friendCode', async (req, res) => {
   }
 });
 
+//route for checking friendship status and adding friend
 router.post('/friends/request', async (req, res) => {
   try {
     const friendCode = String(req.body.friendCode || '').trim().toUpperCase();
@@ -169,6 +178,7 @@ router.post('/friends/request', async (req, res) => {
   }
 });
 
+//route for checking all existing friendships and gives it back in response
 router.get('/friends', async (req, res) => {
   try {
     const currentUserId = toObjectId(req.user.userId);
@@ -185,6 +195,7 @@ router.get('/friends', async (req, res) => {
   }
 });
 
+//route for getting all the pending friend requests
 router.get('/friends/requests', async (req, res) => {
   try {
     const currentUserId = toObjectId(req.user.userId);
@@ -201,6 +212,7 @@ router.get('/friends/requests', async (req, res) => {
   }
 });
 
+//route for accepting friend request(only a request receiver can accept request otherwise it will send an error)
 router.post('/friends/:id/accept', async (req, res) => {
   try {
     const friendship = await Friendship.findOneAndUpdate(
@@ -223,6 +235,7 @@ router.post('/friends/:id/accept', async (req, res) => {
   }
 });
 
+//route for blocking another person(both users can block eachother unlike accept route)
 router.post('/friends/:id/block', async (req, res) => {
   try {
     const currentUserId = toObjectId(req.user.userId);
@@ -245,6 +258,7 @@ router.post('/friends/:id/block', async (req, res) => {
   }
 });
 
+//route for permanently deleting friendship document
 router.delete('/friends/:id', async (req, res) => {
   try {
     const currentUserId = toObjectId(req.user.userId);
@@ -263,6 +277,7 @@ router.delete('/friends/:id', async (req, res) => {
   }
 });
 
+//route for getting all the conversation that user is involved in with most recent activity on top
 router.get('/conversations', async (req, res) => {
   try {
     console.log('GET /social/conversations', { userId: req.user.userId });
@@ -279,6 +294,7 @@ router.get('/conversations', async (req, res) => {
   }
 });
 
+//route for checking if there is existing conversation between friends and creating if there isn't one
 router.post('/conversations/direct', async (req, res) => {
   try {
     console.log('POST /social/conversations/direct', {
@@ -318,6 +334,7 @@ router.post('/conversations/direct', async (req, res) => {
   }
 });
 
+//route for getting messages from conversation
 router.get('/conversations/:id/messages', async (req, res) => {
   try {
     console.log('GET /social/conversations/:id/messages', {
@@ -340,6 +357,7 @@ router.get('/conversations/:id/messages', async (req, res) => {
   }
 });
 
+//route for posting new message
 router.post('/conversations/:id/messages', async (req, res) => {
   try {
     console.log('POST /social/conversations/:id/messages', {

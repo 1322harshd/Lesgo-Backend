@@ -27,6 +27,7 @@ function createModel() {
   });
 }
 
+//helper function to normalise response from OpenAi into simple string
 function extractJsonObject(content) {
   const text = Array.isArray(content)
     ? content.map((part) => (typeof part === 'string' ? part : part.text ?? '')).join('')
