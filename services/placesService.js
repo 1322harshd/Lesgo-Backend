@@ -10,6 +10,7 @@ const TRENDING_FIELD_MASK = [
   'places.googleMapsUri',
   'places.photos',
   'places.primaryType',
+  'places.primaryTypeDisplayName',
   'places.types',
 ].join(',');
 
@@ -28,6 +29,7 @@ const DETAILS_FIELD_MASK = [
   'priceLevel',
   'businessStatus',
   'primaryType',
+  'primaryTypeDisplayName',
   'types',
   'photos',
   'editorialSummary',
@@ -52,16 +54,30 @@ function googlePlacesHeaders(fieldMask) {
   };
 }
 
-function normalizePlace(place) {
+function formatPlaceType(type) {
+  return String(type || 'place')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function normalizePlace(place, category) {
+  const photoName = place.photos?.[0]?.name;
+
   return {
     id: place.id,
     name: place.displayName?.text ?? 'Unnamed place',
+    type: place.primaryTypeDisplayName?.text ?? formatPlaceType(place.primaryType ?? place.types?.[0]),
+    category,
     address: place.formattedAddress ?? '',
     lat: place.location?.latitude,
     lng: place.location?.longitude,
     rating: place.rating,
     userRatingCount: place.userRatingCount,
+    mapsUri: place.googleMapsUri,
     googleMapsUri: place.googleMapsUri,
+    image: photoName
+      ? `https://places.googleapis.com/v1/${photoName}/media?maxWidthPx=240&key=${GOOGLE_MAPS_API_KEY}`
+      : undefined,
     primaryType: place.primaryType,
     types: place.types ?? [],
     photos: place.photos ?? [],
@@ -87,7 +103,7 @@ async function fetchGooglePlaces(url, body, fieldMask) {
   return data.places ?? [];
 }
 
-async function searchNearbyPlaces({ lat, lng, includedTypes }) {
+async function searchNearbyPlaces({ lat, lng, includedTypes, category }) {
   const places = await fetchGooglePlaces(
     'https://places.googleapis.com/v1/places:searchNearby',
     {
@@ -107,10 +123,10 @@ async function searchNearbyPlaces({ lat, lng, includedTypes }) {
     TRENDING_FIELD_MASK
   );
 
-  return places.map(normalizePlace);
+  return places.map((place) => normalizePlace(place, category));
 }
 
-async function searchTextPlaces({ query, includedType }) {
+async function searchTextPlaces({ query, includedType, category }) {
   const places = await fetchGooglePlaces(
     'https://places.googleapis.com/v1/places:searchText',
     {
@@ -122,7 +138,7 @@ async function searchTextPlaces({ query, includedType }) {
     TRENDING_FIELD_MASK
   );
 
-  return places.map(normalizePlace);
+  return places.map((place) => normalizePlace(place, category));
 }
 
 function parseCoordinate(value) {
@@ -137,16 +153,20 @@ export async function getTrendingPlaces({ lat, lng, homeArea }) {
 
   if (latitude !== null && longitude !== null) {
     const [foodPlaces, activityPlaces] = await Promise.all([
-      searchNearbyPlaces({ lat: latitude, lng: longitude, includedTypes: FOOD_TYPES }),
-      searchNearbyPlaces({ lat: latitude, lng: longitude, includedTypes: ACTIVITY_TYPES }),
+      searchNearbyPlaces({ lat: latitude, lng: longitude, includedTypes: FOOD_TYPES, category: 'food' }),
+      searchNearbyPlaces({ lat: latitude, lng: longitude, includedTypes: ACTIVITY_TYPES, category: 'activity' }),
     ]);
 
     return { foodPlaces, activityPlaces };
   }
 
   const [foodPlaces, activityPlaces] = await Promise.all([
-    searchTextPlaces({ query: `popular food places in ${area}`, includedType: 'restaurant' }),
-    searchTextPlaces({ query: `popular activities in ${area}`, includedType: 'tourist_attraction' }),
+    searchTextPlaces({ query: `popular food places in ${area}`, includedType: 'restaurant', category: 'food' }),
+    searchTextPlaces({
+      query: `popular activities in ${area}`,
+      includedType: 'tourist_attraction',
+      category: 'activity',
+    }),
   ]);
 
   return { foodPlaces, activityPlaces };
