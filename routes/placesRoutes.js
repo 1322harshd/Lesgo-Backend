@@ -3,9 +3,9 @@ import { getPlaceDetails, getTrendingPlaces } from '../services/placesService.js
 
 const router = express.Router();
 
-router.get('/trending', async (req, res) => {
+async function trendingPlacesRequest(req, res) {
   try {
-    console.log('GET /places/trending', {
+    console.log(`GET ${req.originalUrl}`, {
       lat: req.query.lat,
       lng: req.query.lng,
       homeArea: req.query.homeArea,
@@ -21,7 +21,12 @@ router.get('/trending', async (req, res) => {
   } catch (error) {
     res.status(error.statusCode || 400).json({ message: error.message });
   }
-});
+}
+
+router.get('/', trendingPlacesRequest);
+router.get('/trending', trendingPlacesRequest);
+router.get('/trending-locations', trendingPlacesRequest);
+router.get('/trending-places', trendingPlacesRequest);
 
 router.get('/:placeId', async (req, res) => {
   try {
