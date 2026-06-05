@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { Conversation, Friendship, Message, Plan, User } from '../models/appModels.js';
+import { Conversation, Friendship, Message, Notification, Plan, User } from '../models/appModels.js';
 import { getFreshGoogleAccessToken } from './googleAuthService.js';
 
 const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY || process.env.GOOGLE_PLACES_API_KEY;
@@ -7,6 +7,7 @@ const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY || process.env.GOOGL
 const WORK_DAY_START_HOUR = 9;
 const WORK_DAY_END_HOUR = 22;
 const MAX_SLOTS = 5;
+const MAX_PLACE_RESULTS = 10;
 
 // Converts incoming string ids into MongoDB ObjectIds, and returns null for invalid ids.
 export function toObjectId(id) {
@@ -291,6 +292,19 @@ function placesTypesForActivity(activityType) {
   return typeMap[activityType] ?? typeMap.food;
 }
 
+// Places API returns popular places in a stable order, so shuffle them before pairing
+// with time slots. That keeps repeat suggestion runs from always showing the same cafe.
+function shufflePlaces(places) {
+  const shuffled = [...places];
+
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+  }
+
+  return shuffled;
+}
+
 // Looks for nearby places that match the activity type around the group's midpoint.
 async function fetchPlaceSuggestions({ users, activityType }) {
   const midpoint = calculateMidpoint(users);
@@ -309,7 +323,7 @@ async function fetchPlaceSuggestions({ users, activityType }) {
     },
     body: JSON.stringify({
       includedTypes: placesTypesForActivity(activityType),
-      maxResultCount: 5,
+      maxResultCount: MAX_PLACE_RESULTS,
       rankPreference: 'POPULARITY',
       locationRestriction: {
         circle: {
@@ -334,14 +348,14 @@ async function fetchPlaceSuggestions({ users, activityType }) {
     return fallbackPlaces(midpoint, activityType);
   }
 
-  return places.map((place) => ({
+  return shufflePlaces(places.map((place) => ({
     name: place.displayName?.text ?? 'Suggested place',
     address: place.formattedAddress ?? '',
     lat: place.location?.latitude,
     lng: place.location?.longitude,
     rating: place.rating,
     googleMapsUri: place.googleMapsUri,
-  }));
+  })));
 }
 
 // Gives the frontend a usable placeholder when Places API is not configured or has no results.
@@ -577,20 +591,16 @@ export async function getUserPlans(currentUserId) {
 }
 
 // Lets creators, participants, or invited users cancel a plan they are connected to.
+// It also writes a system message to the plan chat and notifies the other involved users.
 export async function cancelPlan(currentUserId, planId) {
-  const plan = await Plan.findOneAndUpdate(
-    {
-      _id: planId,
-      $or: [
-        { creatorId: currentUserId },
-        { participantIds: currentUserId },
-        { invitedParticipantIds: currentUserId },
-      ],
-      status: { $ne: 'cancelled' },
-    },
-    { $set: { status: 'cancelled' } },
-    { new: true }
-  ).populate(['participantIds', 'creatorId']);
+  if (!mongoose.Types.ObjectId.isValid(planId)) {
+    const error = new Error('Plan not found.');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const cancellingUserId = toObjectId(currentUserId);
+  const plan = await Plan.findById(planId);
 
   if (!plan) {
     const error = new Error('Plan not found.');
@@ -598,5 +608,68 @@ export async function cancelPlan(currentUserId, planId) {
     throw error;
   }
 
-  return planSummary(plan);
+  const involvedUserIds = uniqueIds([
+    plan.creatorId,
+    ...plan.participantIds,
+    ...plan.invitedParticipantIds,
+    ...plan.acceptedParticipantIds,
+  ]);
+  const isAllowedToCancel = involvedUserIds.includes(currentUserId);
+
+  if (!isAllowedToCancel) {
+    const error = new Error('You are not allowed to cancel this plan.');
+    error.statusCode = 403;
+    throw error;
+  }
+
+  if (plan.status === 'cancelled') {
+    const error = new Error('Plan is already cancelled.');
+    error.statusCode = 409;
+    throw error;
+  }
+
+  const cancellingUser = await User.findById(cancellingUserId);
+  const cancellingUserName = cancellingUser?.name || 'Someone';
+  const notifiedUserIds = involvedUserIds.filter((userId) => userId !== currentUserId);
+
+  plan.status = 'cancelled';
+  plan.cancelledBy = cancellingUserId;
+  plan.cancelledAt = new Date();
+  await plan.save();
+
+  if (plan.conversationId) {
+    await Message.create({
+      conversationId: plan.conversationId,
+      senderId: cancellingUserId,
+      type: 'system',
+      planId: plan._id,
+      content: `Plan cancelled by ${cancellingUserName}`,
+      readBy: [currentUserId],
+    });
+    await Conversation.findByIdAndUpdate(plan.conversationId, { $set: { updatedAt: new Date() } });
+  }
+
+  if (notifiedUserIds.length) {
+    await Notification.insertMany(
+      notifiedUserIds.map((recipientId) => ({
+        type: 'plan_cancelled',
+        recipientId,
+        actorId: cancellingUserId,
+        planId: plan._id,
+        title: 'Plan cancelled',
+        message: `${cancellingUserName} cancelled ${plan.title}`,
+        read: false,
+      }))
+    );
+  }
+
+  return {
+    message: 'Plan cancelled',
+    planId: plan._id.toString(),
+    cancelledBy: {
+      id: currentUserId,
+      name: cancellingUserName,
+    },
+    notifiedCount: notifiedUserIds.length,
+  };
 }
