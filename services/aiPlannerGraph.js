@@ -185,6 +185,7 @@ Rules:
 - For vague times: morning=09:00-12:00, afternoon=12:00-17:00, evening=17:00-22:00.
 - If the user says "friends", "all friends", or "everyone", set includeAllFriends=true.
 - Never create a plan unless the user clearly confirms a previously suggested option.
+- If the user starts with words like "plan coffee..." or "make dinner plans..." but no previous suggestions exist, use "suggest_hangout".
 - If user selects "first", selectedSuggestionIndex must be 0; "second" is 1.
 - For simple greetings or non-planning chat, use action "general_reply".
 - Return only a JSON object. Do not use markdown.
@@ -258,12 +259,13 @@ async function plannerNode(state) {
     };
   }
   const selectedSuggestionIndex = inferSelectedSuggestionIndex(userMessage, intent.selectedSuggestionIndex);
+  const lastSuggestions = conversation.agentState?.lastSuggestions ?? [];
+  const isConfirmingSuggestion = isConfirmationMessage(userMessage) && lastSuggestions.length > 0;
   const { participantIds, unresolvedNames } = resolveParticipants({
     friends,
     friendNames: intent.friendNames,
     includeAllFriends: intent.includeAllFriends,
   });
-  const lastSuggestions = conversation.agentState?.lastSuggestions ?? [];
 
   if (unresolvedNames.length) {
     return {
@@ -273,15 +275,7 @@ async function plannerNode(state) {
     };
   }
 
-  if (intent.action === 'create_plan' || (isConfirmationMessage(userMessage) && lastSuggestions.length)) {
-    if (!lastSuggestions.length) {
-      return {
-        result: {
-          reply: 'I can create a plan after I suggest some options first. Tell me who, when, and what kind of hangout you want.',
-        },
-      };
-    }
-
+  if (lastSuggestions.length && (intent.action === 'create_plan' || isConfirmingSuggestion)) {
     const suggestion = lastSuggestions[selectedSuggestionIndex ?? 0];
 
     if (!suggestion) {
