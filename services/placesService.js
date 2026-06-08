@@ -36,7 +36,17 @@ const DETAILS_FIELD_MASK = [
 ].join(',');
 
 const FOOD_TYPES = ['restaurant', 'cafe', 'bar'];
-const ACTIVITY_TYPES = ['tourist_attraction', 'park', 'movie_theater', 'bowling_alley', 'museum'];
+const ACTIVITY_TYPES = [
+  'park',
+  'tourist_attraction',
+  'national_park',
+  'campground',
+  'museum',
+  'amusement_park',
+  'zoo',
+  'botanical_garden',
+  'hiking_area',
+];
 
 function assertGoogleMapsApiKey() {
   if (!GOOGLE_MAPS_API_KEY) {
@@ -116,7 +126,7 @@ async function searchNearbyPlaces({ lat, lng, includedTypes, category }) {
             latitude: lat,
             longitude: lng,
           },
-          radius: 5000,
+          radius: 10000,
         },
       },
     },
