@@ -20,10 +20,20 @@ const PORT = process.env.PORT || 3001;
 const HOST = process.env.HOST || '0.0.0.0';
 
 // Configure CORS for frontend applications
-const allowedOrigins = process.env.FRONTEND_ORIGINS
+const configuredOrigins = (process.env.FRONTEND_ORIGINS || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const allowAnyOrigin = configuredOrigins.length === 0 || configuredOrigins.includes('*');
 
 app.use(cors({
-    origin: allowedOrigins,
+    origin(origin, callback) {
+      if (!origin || allowAnyOrigin || configuredOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error(`Origin ${origin} is not allowed by CORS`));
+    },
     credentials: true
 }));
 
@@ -41,6 +51,8 @@ app.get('/health', (req, res) => {
 app.use('/users', userRoutes);
 
 app.use('/auth', authRoutes);
+
+app.use('/api/auth', authRoutes);
 
 app.use('/social', socialRoutes);
 
