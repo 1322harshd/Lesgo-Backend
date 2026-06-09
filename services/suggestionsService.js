@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
-import { Conversation, Friendship, Message, Notification, Plan, User } from '../models/appModels.js';
+import { Conversation, Friendship, Message, Plan, User } from '../models/appModels.js';
 import { getFreshGoogleAccessToken } from './googleAuthService.js';
+import { createAndSendNotifications } from './notificationService.js';
 
 const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY || process.env.GOOGLE_PLACES_API_KEY;
 
@@ -358,6 +359,35 @@ async function fetchPlaceSuggestions({ users, activityType }) {
   })));
 }
 
+// Builds the final options from every usable time/place pairing, then caps the list.
+// This lets one free time still produce multiple place choices.
+function buildSuggestionOptions({ slots, places, users }) {
+  const suggestionCount = Math.min(MAX_SLOTS, slots.length * places.length);
+  const pairs = [];
+  let slotOffset = 0;
+
+  while (pairs.length < suggestionCount) {
+    const place = places[pairs.length % places.length];
+    const slot = slots[slotOffset % slots.length];
+    const pairKey = `${slot.start.toISOString()}-${place.name}-${place.address}`;
+    const hasPair = pairs.some((pair) => pair.key === pairKey);
+
+    slotOffset += 1;
+
+    if (!hasPair) {
+      pairs.push({ key: pairKey, slot, place });
+    }
+  }
+
+  return pairs.map(({ slot, place }, index) => ({
+    id: `suggestion-${index + 1}`,
+    time: slot,
+    place,
+    participants: users.map(userSummary),
+    score: Math.max(70, 96 - index * 7),
+  }));
+}
+
 // Gives the frontend a usable placeholder when Places API is not configured or has no results.
 function fallbackPlaces(midpoint, activityType) {
   const label = activityType === 'coffee' ? 'Cafe' : activityType === 'activity' ? 'Activity Spot' : 'Restaurant';
@@ -444,13 +474,7 @@ export async function suggestHangout(currentUserId, input) {
   ]);
   const slots = findCommonFreeSlots(calendarResults, dateFrom, dateTo, durationMinutes);
 
-  const suggestions = slots.map((slot, index) => ({
-    id: `suggestion-${index + 1}`,
-    time: slot,
-    place: places[index % places.length],
-    participants: users.map(userSummary),
-    score: Math.max(70, 96 - index * 7),
-  }));
+  const suggestions = buildSuggestionOptions({ slots, places, users });
 
   return {
     suggestions,
@@ -479,6 +503,8 @@ export async function createPlan(currentUserId, input) {
   const invitedObjectIds = users
     .filter((user) => user._id.toString() !== currentUserId)
     .map((user) => user._id);
+  const creator = users.find((user) => user._id.toString() === currentUserId);
+  const creatorName = creator?.name || 'Someone';
   const place = input.place ?? {};
   const title = String(input.title || `${place.name || 'Hangout'} plan`).trim();
   const plan = await Plan.create({
@@ -503,6 +529,17 @@ export async function createPlan(currentUserId, input) {
 
   const populatedPlan = await Plan.findById(plan._id).populate(['participantIds', 'creatorId']);
 
+  if (invitedObjectIds.length) {
+    await createAndSendNotifications({
+      type: 'plan_invite',
+      recipientIds: invitedObjectIds,
+      actorId: creatorObjectId,
+      planId: plan._id,
+      title: 'New plan invite',
+      message: `${creatorName} invited you to ${title}`,
+    });
+  }
+
   return {
     plan: planSummary(populatedPlan),
     invitedCount: invitedObjectIds.length,
@@ -526,6 +563,7 @@ export async function acceptPlanInvite(currentUserId, planId) {
   const currentObjectId = toObjectId(currentUserId);
   const participantIds = uniqueIds([...plan.participantIds, currentObjectId]).map(toObjectId);
   const acceptedParticipantIds = uniqueIds([...plan.acceptedParticipantIds, currentObjectId]).map(toObjectId);
+  const notifiedUserIds = uniqueIds([...plan.acceptedParticipantIds, plan.creatorId]);
 
   let conversation = plan.conversationId
     ? await Conversation.findById(plan.conversationId)
@@ -556,6 +594,20 @@ export async function acceptPlanInvite(currentUserId, planId) {
   });
 
   const populatedPlan = await Plan.findById(plan._id).populate(['participantIds', 'creatorId']);
+  const acceptingUser = populatedPlan.participantIds?.find(
+    (participant) => participant._id?.toString?.() === currentUserId
+  );
+  const acceptingUserName = acceptingUser?.name || 'Someone';
+
+  await createAndSendNotifications({
+    type: 'plan_accepted',
+    recipientIds: notifiedUserIds,
+    actorId: currentObjectId,
+    planId: plan._id,
+    conversationId: conversation._id,
+    title: 'Plan invite accepted',
+    message: `${acceptingUserName} accepted ${plan.title}`,
+  });
 
   return {
     plan: planSummary(populatedPlan),
@@ -650,17 +702,15 @@ export async function cancelPlan(currentUserId, planId) {
   }
 
   if (notifiedUserIds.length) {
-    await Notification.insertMany(
-      notifiedUserIds.map((recipientId) => ({
-        type: 'plan_cancelled',
-        recipientId,
-        actorId: cancellingUserId,
-        planId: plan._id,
-        title: 'Plan cancelled',
-        message: `${cancellingUserName} cancelled ${plan.title}`,
-        read: false,
-      }))
-    );
+    await createAndSendNotifications({
+      type: 'plan_cancelled',
+      recipientIds: notifiedUserIds,
+      actorId: cancellingUserId,
+      planId: plan._id,
+      conversationId: plan.conversationId,
+      title: 'Plan cancelled',
+      message: `${cancellingUserName} cancelled ${plan.title}`,
+    });
   }
 
   return {

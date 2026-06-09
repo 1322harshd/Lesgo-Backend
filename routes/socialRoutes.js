@@ -2,6 +2,7 @@ import express from 'express';
 import mongoose from 'mongoose';
 import { protect } from '../middleware/authMiddleware.js';
 import { Conversation, Friendship, Message, User } from '../models/appModels.js';
+import { createAndSendNotifications } from '../services/notificationService.js';
 
 const router = express.Router();
 
@@ -79,6 +80,16 @@ function conversationSummary(conversation) {
     createdAt: conversation.createdAt,
     updatedAt: conversation.updatedAt,
   };
+}
+
+function previewText(value, maxLength = 120) {
+  const text = String(value || '').trim();
+
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, maxLength - 3)}...`;
 }
 
 //helper function for looking up friendship between two people
@@ -172,6 +183,15 @@ router.post('/friends/request', async (req, res) => {
     });
 
     const populatedFriendship = await friendship.populate(['requesterId', 'receiverId']);
+    await createAndSendNotifications({
+      type: 'friend_request',
+      recipientIds: [receiver._id],
+      actorId: currentUserId,
+      friendshipId: friendship._id,
+      title: 'New friend request',
+      message: `${populatedFriendship.requesterId.name} sent you a friend request`,
+    });
+
     res.status(201).json({ friendship: friendshipSummary(populatedFriendship, req.user.userId) });
   } catch (error) {
     res.status(400).json({ message: error.message });
@@ -228,6 +248,15 @@ router.post('/friends/:id/accept', async (req, res) => {
     if (!friendship) {
       return res.status(404).json({ message: 'Friend request not found.' });
     }
+
+    await createAndSendNotifications({
+      type: 'friend_request_accepted',
+      recipientIds: [friendship.requesterId._id],
+      actorId: friendship.receiverId._id,
+      friendshipId: friendship._id,
+      title: 'Friend request accepted',
+      message: `${friendship.receiverId.name} accepted your friend request`,
+    });
 
     res.json({ friendship: friendshipSummary(friendship, req.user.userId) });
   } catch (error) {
@@ -383,6 +412,17 @@ router.post('/conversations/:id/messages', async (req, res) => {
       senderId: req.user.userId,
       content,
       readBy: [req.user.userId],
+    });
+
+    const sender = await User.findById(req.user.userId);
+    await createAndSendNotifications({
+      type: 'message',
+      recipientIds: conversation.participants,
+      actorId: req.user.userId,
+      conversationId: conversation._id,
+      messageId: message._id,
+      title: sender?.name ? `New message from ${sender.name}` : 'New message',
+      message: previewText(content),
     });
 
     await Conversation.findByIdAndUpdate(conversation._id, { $set: { updatedAt: new Date() } });
