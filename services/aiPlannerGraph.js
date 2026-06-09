@@ -2,7 +2,7 @@ import { ChatOpenAI } from '@langchain/openai';
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 import { AgentConversation } from '../models/appModels.js';
-import { createPlan, getAcceptedFriends, suggestHangout } from './suggestionsService.js';
+import { cancelPlan, createPlan, getAcceptedFriends, getUserPlans, suggestHangout } from './suggestionsService.js';
 
 const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'gpt-5.4-mini';
 const MAX_CONTEXT_MESSAGES = 12;
@@ -46,7 +46,14 @@ function extractJsonObject(content) {
 
 
 function normalizePlannerIntent(intent, userMessage) {
-  const validActions = new Set(['ask_question', 'suggest_hangout', 'create_plan', 'general_reply']);
+  const validActions = new Set([
+    'ask_question',
+    'suggest_hangout',
+    'create_plan',
+    'list_plans',
+    'cancel_plan',
+    'general_reply',
+  ]);
   const validActivities = new Set(['coffee', 'food', 'activity', 'outdoors']);
 
   return {
@@ -60,6 +67,7 @@ function normalizePlannerIntent(intent, userMessage) {
     durationMinutes: Number.isFinite(Number(intent.durationMinutes)) ? Number(intent.durationMinutes) : null,
     title: intent.title ? String(intent.title) : null,
     selectedSuggestionIndex: inferSelectedSuggestionIndex(userMessage, Number.isInteger(intent.selectedSuggestionIndex) ? intent.selectedSuggestionIndex : null),
+    selectedPlanIndex: inferSelectedSuggestionIndex(userMessage, Number.isInteger(intent.selectedPlanIndex) ? intent.selectedPlanIndex : null),
     missingInfo: Array.isArray(intent.missingInfo) ? intent.missingInfo.map(String) : [],
   };
 }
@@ -79,6 +87,18 @@ function suggestionSummary(suggestions = []) {
   return suggestions
     .map((suggestion, index) => (
       `${index + 1}. ${suggestion.time?.label ?? suggestion.time?.start} at ${suggestion.place?.name ?? 'a suggested place'}`
+    ))
+    .join('\n');
+}
+
+function planListSummary(plans = []) {
+  if (!plans.length) {
+    return 'No upcoming plans have been listed yet.';
+  }
+
+  return plans
+    .map((plan, index) => (
+      `${index + 1}. ${plan.title} on ${plan.dateTimeLabel} at ${plan.location}`
     ))
     .join('\n');
 }
@@ -123,6 +143,16 @@ function isConfirmationMessage(message) {
   return /\b(yes|yeah|yep|sure|confirm|create|book|make it|go ahead)\b/i.test(message);
 }
 
+function isListPlansMessage(message) {
+  return /\b(show|list|see|check|view)\b/i.test(message) &&
+    /\b(plan|plans|upcoming|schedule)\b/i.test(message);
+}
+
+function isCancelPlanMessage(message) {
+  return /\b(cancel|delete|remove)\b/i.test(message) &&
+    /\b(plan|plans|booking|hangout|event|first|second|third|option|#?\d)\b/i.test(message);
+}
+
 function inferSelectedSuggestionIndex(message, parsedIndex) {
   if (Number.isInteger(parsedIndex) && parsedIndex >= 0) {
     return parsedIndex;
@@ -151,6 +181,40 @@ function formatSuggestionsReply(suggestions) {
   return `I found these options:\n${options}\n\nWhich one should I create?`;
 }
 
+function formatPlansReply(plans) {
+  if (!plans.length) {
+    return 'You do not have any upcoming plans right now.';
+  }
+
+  const options = plans
+    .map((plan, index) => (
+      `${index + 1}. ${plan.title} - ${plan.dateTimeLabel} at ${plan.location}`
+    ))
+    .join('\n');
+
+  return `Here are your upcoming plans:\n${options}\n\nTell me which one you want to cancel.`;
+}
+
+function findPlanMatch({ plans, title, selectedPlanIndex }) {
+  if (Number.isInteger(selectedPlanIndex) && selectedPlanIndex >= 0) {
+    return plans[selectedPlanIndex] ?? null;
+  }
+
+  const normalizedTitle = normalizeText(title);
+
+  if (!normalizedTitle) {
+    return null;
+  }
+
+  return plans.find((plan) => {
+    const planTitle = normalizeText(plan.title);
+    const location = normalizeText(plan.location);
+    return planTitle.includes(normalizedTitle) ||
+      normalizedTitle.includes(planTitle) ||
+      location.includes(normalizedTitle);
+  }) ?? null;
+}
+
 async function parsePlannerIntent({ conversation, userMessage, friends }) {
   const model = createModel();
 
@@ -166,6 +230,7 @@ async function parsePlannerIntent({ conversation, userMessage, friends }) {
       durationMinutes: null,
       title: null,
       selectedSuggestionIndex: inferSelectedSuggestionIndex(userMessage, null),
+      selectedPlanIndex: inferSelectedSuggestionIndex(userMessage, null),
       missingInfo: ['OPENAI_API_KEY'],
     };
   }
@@ -187,12 +252,15 @@ Rules:
 - Never create a plan unless the user clearly confirms a previously suggested option.
 - If the user starts with words like "plan coffee..." or "make dinner plans..." but no previous suggestions exist, use "suggest_hangout".
 - If user selects "first", selectedSuggestionIndex must be 0; "second" is 1.
+- If the user asks to see, list, show, or check upcoming plans, use action "list_plans".
+- If the user asks to cancel/delete/remove an upcoming plan, use action "cancel_plan".
+- For cancel_plan, set selectedPlanIndex when they choose a numbered listed plan, and set title when they mention a plan name or place.
 - For simple greetings or non-planning chat, use action "general_reply".
 - Return only a JSON object. Do not use markdown.
 
 JSON shape:
 {
-  "action": "ask_question" | "suggest_hangout" | "create_plan" | "general_reply",
+  "action": "ask_question" | "suggest_hangout" | "create_plan" | "list_plans" | "cancel_plan" | "general_reply",
   "reply": "short friendly message",
   "friendNames": [],
   "includeAllFriends": false,
@@ -202,6 +270,7 @@ JSON shape:
   "durationMinutes": null,
   "title": null,
   "selectedSuggestionIndex": null,
+  "selectedPlanIndex": null,
   "missingInfo": []
 }
 
@@ -210,6 +279,9 @@ ${friendList}
 
 Previous suggestions:
 ${suggestionSummary(conversation.agentState?.lastSuggestions)}
+
+Previously listed upcoming plans:
+${planListSummary(conversation.agentState?.lastPlans)}
 
 Recent conversation:
 ${recentMessages(conversation)}`),
@@ -237,6 +309,7 @@ ${recentMessages(conversation)}`),
       durationMinutes: null,
       title: null,
       selectedSuggestionIndex: inferSelectedSuggestionIndex(userMessage, null),
+      selectedPlanIndex: inferSelectedSuggestionIndex(userMessage, null),
       missingInfo: [],
     };
   }
@@ -258,9 +331,22 @@ async function plannerNode(state) {
       },
     };
   }
+  if (isListPlansMessage(userMessage)) {
+    intent.action = 'list_plans';
+  }
+  if (isCancelPlanMessage(userMessage)) {
+    intent.action = 'cancel_plan';
+  }
+
   const selectedSuggestionIndex = inferSelectedSuggestionIndex(userMessage, intent.selectedSuggestionIndex);
+  const selectedPlanIndex = inferSelectedSuggestionIndex(userMessage, intent.selectedPlanIndex);
   const lastSuggestions = conversation.agentState?.lastSuggestions ?? [];
+  const lastPlans = conversation.agentState?.lastPlans ?? [];
+  const pendingCancelPlan = conversation.agentState?.pendingCancelPlan ?? null;
   const isConfirmingSuggestion = isConfirmationMessage(userMessage) && lastSuggestions.length > 0;
+  if (lastPlans.length && /\bcancel\b/i.test(userMessage)) {
+    intent.action = 'cancel_plan';
+  }
   const { participantIds, unresolvedNames } = resolveParticipants({
     friends,
     friendNames: intent.friendNames,
@@ -271,6 +357,93 @@ async function plannerNode(state) {
     return {
       result: {
         reply: `I could not find ${unresolvedNames.join(', ')} in your accepted friends. Which friend should I include?`,
+      },
+    };
+  }
+
+  if (pendingCancelPlan && isConfirmationMessage(userMessage)) {
+    const cancelResult = await cancelPlan(userId, pendingCancelPlan.id);
+
+    return {
+      result: {
+        reply: `Done. I cancelled "${pendingCancelPlan.title}".`,
+        cancelResult,
+        nextAgentState: {
+          ...conversation.agentState,
+          pendingCancelPlan: null,
+          lastPlans: [],
+        },
+      },
+    };
+  }
+
+  if (intent.action === 'list_plans') {
+    const plans = await getUserPlans(userId);
+
+    return {
+      result: {
+        reply: formatPlansReply(plans),
+        plans,
+        nextAgentState: {
+          ...conversation.agentState,
+          lastPlans: plans,
+          pendingCancelPlan: null,
+        },
+      },
+    };
+  }
+
+  if (intent.action === 'cancel_plan') {
+    const plans = lastPlans.length ? lastPlans : await getUserPlans(userId);
+
+    if (!plans.length) {
+      return {
+        result: {
+          reply: 'You do not have any upcoming plans to cancel.',
+          nextAgentState: {
+            ...conversation.agentState,
+            lastPlans: [],
+            pendingCancelPlan: null,
+          },
+        },
+      };
+    }
+
+    let plan = findPlanMatch({
+      plans,
+      title: intent.title,
+      selectedPlanIndex,
+    });
+
+    if (!plan && plans.length === 1) {
+      [plan] = plans;
+    }
+
+    if (!plan) {
+      return {
+        result: {
+          reply: formatPlansReply(plans),
+          plans,
+          nextAgentState: {
+            ...conversation.agentState,
+            lastPlans: plans,
+            pendingCancelPlan: null,
+          },
+        },
+      };
+    }
+
+    const cancelResult = await cancelPlan(userId, plan.id);
+
+    return {
+      result: {
+        reply: `Done. I cancelled "${plan.title}".`,
+        cancelResult,
+        nextAgentState: {
+          ...conversation.agentState,
+          lastPlans: [],
+          pendingCancelPlan: null,
+        },
       },
     };
   }
@@ -305,6 +478,7 @@ async function plannerNode(state) {
         nextAgentState: {
           ...conversation.agentState,
           lastSuggestions: [],
+          lastPlans: [],
           awaitingConfirmation: false,
         },
       },
@@ -349,6 +523,7 @@ async function plannerNode(state) {
       nextAgentState: {
         ...conversation.agentState,
         lastSuggestions: suggestionResult.suggestions,
+        lastPlans: [],
         pendingIntent: intent,
         awaitingConfirmation: suggestionResult.suggestions.length > 0,
       },
@@ -420,6 +595,8 @@ export async function sendAgentMessage({ userId, conversationId, message }) {
     data: {
       suggestions: result.suggestions,
       plan: result.plan,
+      plans: result.plans,
+      cancelResult: result.cancelResult,
       calendarStatus: result.calendarStatus,
     },
   });
@@ -431,6 +608,8 @@ export async function sendAgentMessage({ userId, conversationId, message }) {
     reply: result.reply,
     suggestions: result.suggestions ?? [],
     plan: result.plan,
+    plans: result.plans ?? [],
+    cancelResult: result.cancelResult,
     calendarStatus: result.calendarStatus ?? [],
   };
 }

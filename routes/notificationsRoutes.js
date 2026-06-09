@@ -1,6 +1,6 @@
 import express from 'express';
 import { protect } from '../middleware/authMiddleware.js';
-import { Notification } from '../models/appModels.js';
+import { FcmToken, Notification } from '../models/appModels.js';
 
 const router = express.Router();
 
@@ -26,7 +26,10 @@ function notificationSummary(notification) {
     recipientId: notification.recipientId.toString(),
     actor: userSummary(notification.actorId),
     actorId: notification.actorId?._id?.toString?.() || notification.actorId.toString(),
-    planId: notification.planId?._id?.toString?.() || notification.planId.toString(),
+    planId: notification.planId?._id?.toString?.() || notification.planId?.toString?.(),
+    friendshipId: notification.friendshipId?._id?.toString?.() || notification.friendshipId?.toString?.(),
+    conversationId: notification.conversationId?._id?.toString?.() || notification.conversationId?.toString?.(),
+    messageId: notification.messageId?._id?.toString?.() || notification.messageId?.toString?.(),
     title: notification.title,
     message: notification.message,
     read: notification.read,
@@ -46,6 +49,96 @@ router.get('/', async (req, res) => {
       .limit(50);
 
     res.json({ notifications: notifications.map(notificationSummary) });
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+});
+
+router.post('/fcm-token', async (req, res) => {
+  try {
+    const token = String(req.body.token || '').trim();
+    const platform = ['ios', 'android', 'web'].includes(req.body.platform)
+      ? req.body.platform
+      : 'unknown';
+    const deviceId = req.body.deviceId ? String(req.body.deviceId).trim() : undefined;
+
+    if (!token) {
+      return res.status(400).json({ message: 'FCM token is required.' });
+    }
+
+    console.log('POST /notifications/fcm-token', {
+      userId: req.user.userId,
+      platform,
+      hasDeviceId: Boolean(deviceId),
+    });
+
+    const tokenDoc = await FcmToken.findOneAndUpdate(
+      { token },
+      {
+        $set: {
+          userId: req.user.userId,
+          token,
+          platform,
+          deviceId,
+          lastSeenAt: new Date(),
+        },
+      },
+      {
+        new: true,
+        upsert: true,
+        setDefaultsOnInsert: true,
+      }
+    );
+
+    res.status(201).json({
+      fcmToken: {
+        id: tokenDoc._id.toString(),
+        platform: tokenDoc.platform,
+        deviceId: tokenDoc.deviceId,
+        lastSeenAt: tokenDoc.lastSeenAt,
+      },
+    });
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+});
+
+router.delete('/fcm-token', async (req, res) => {
+  try {
+    const token = String(req.body.token || '').trim();
+
+    if (!token) {
+      return res.status(400).json({ message: 'FCM token is required.' });
+    }
+
+    await FcmToken.deleteOne({
+      userId: req.user.userId,
+      token,
+    });
+
+    res.status(204).send();
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+});
+
+router.delete('/:id', async (req, res) => {
+  try {
+    console.log('DELETE /notifications/:id', {
+      userId: req.user.userId,
+      notificationId: req.params.id,
+    });
+
+    const result = await Notification.deleteOne({
+      _id: req.params.id,
+      recipientId: req.user.userId,
+    });
+
+    if (!result.deletedCount) {
+      return res.status(404).json({ message: 'Notification not found.' });
+    }
+
+    res.status(204).send();
   } catch (error) {
     res.status(400).json({ message: error.message });
   }

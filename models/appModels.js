@@ -242,7 +242,14 @@ const NotificationSchema = new Schema(
     type: {
       type: String,
       required: true,
-      enum: ['plan_cancelled']
+      enum: [
+        'plan_invite',
+        'plan_accepted',
+        'plan_cancelled',
+        'friend_request',
+        'friend_request_accepted',
+        'message',
+      ]
     },
     recipientId: {
       type: Schema.Types.ObjectId,
@@ -256,8 +263,19 @@ const NotificationSchema = new Schema(
     },
     planId: {
       type: Schema.Types.ObjectId,
-      ref: 'Plan',
-      required: true
+      ref: 'Plan'
+    },
+    friendshipId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Friendship'
+    },
+    conversationId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Conversation'
+    },
+    messageId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Message'
     },
     title: {
       type: String,
@@ -279,6 +297,41 @@ const NotificationSchema = new Schema(
 
 NotificationSchema.index({ recipientId: 1, read: 1, createdAt: -1 });
 NotificationSchema.index({ planId: 1, type: 1 });
+NotificationSchema.index({ friendshipId: 1, type: 1 });
+NotificationSchema.index({ conversationId: 1, createdAt: -1 });
+
+const FcmTokenSchema = new Schema(
+  {
+    userId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    token: {
+      type: String,
+      required: true,
+      unique: true,
+      trim: true
+    },
+    platform: {
+      type: String,
+      enum: ['ios', 'android', 'web', 'unknown'],
+      default: 'unknown'
+    },
+    deviceId: {
+      type: String,
+      trim: true
+    },
+    lastSeenAt: {
+      type: Date,
+      default: Date.now
+    }
+  },
+  { timestamps: true }
+);
+
+FcmTokenSchema.index({ userId: 1, platform: 1 });
+FcmTokenSchema.index({ lastSeenAt: 1 });
 
 export const User = model('User', UserSchema);
 export const Friendship = model('Friendship', FriendshipSchema);
@@ -287,3 +340,4 @@ export const Message = model('Message', MessageSchema);
 export const Plan = model('Plan', PlanSchema);
 export const AgentConversation = model('AgentConversation', AgentConversationSchema);
 export const Notification = model('Notification', NotificationSchema);
+export const FcmToken = model('FcmToken', FcmTokenSchema);
