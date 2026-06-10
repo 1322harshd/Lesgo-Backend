@@ -1,5 +1,32 @@
 import mongoose from 'mongoose';
+import { readEncryptedField } from '../services/dataEncryptionService.js';
 const { Schema, model } = mongoose;
+
+const ENCRYPTED_USER_FIELDS = [
+  'contactNumber',
+  'homeArea',
+  'homeLat',
+  'homeLng',
+  'googleAccessToken',
+  'googleRefreshToken',
+];
+
+function applyUserPrivacyTransform(document, returnedUser) {
+  for (const field of ENCRYPTED_USER_FIELDS) {
+    const value = readEncryptedField(document, field);
+
+    if (value !== undefined && value !== null) {
+      returnedUser[field] = value;
+    }
+
+    delete returnedUser[`${field}Encrypted`];
+  }
+
+  delete returnedUser.googleAccessToken;
+  delete returnedUser.googleRefreshToken;
+
+  return returnedUser;
+}
 
 const UserSchema = new Schema({
   googleId: {
@@ -29,16 +56,30 @@ const UserSchema = new Schema({
 
   profilePicture: String,
   contactNumber: String,
+  contactNumberEncrypted: String,
 
   homeArea: String,
+  homeAreaEncrypted: String,
   homeLat: Number,
+  homeLatEncrypted: String,
   homeLng: Number,
+  homeLngEncrypted: String,
 
   googleAccessToken: String,
+  googleAccessTokenEncrypted: String,
 
   googleRefreshToken: String,
+  googleRefreshTokenEncrypted: String,
 
   googleTokenExpiry: Date
+});
+
+UserSchema.set('toJSON', {
+  transform: applyUserPrivacyTransform,
+});
+
+UserSchema.set('toObject', {
+  transform: applyUserPrivacyTransform,
 });
 
 const FriendshipSchema = new Schema({
@@ -57,6 +98,13 @@ const FriendshipSchema = new Schema({
     enum: ['pending', 'accepted', 'blocked'],
     default: 'pending'
   },
+  blockedBy: {
+    type: Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  blockedAt: {
+    type: Date
+  },
   createdAt: {
     type: Date,
     default: Date.now
@@ -65,6 +113,7 @@ const FriendshipSchema = new Schema({
 
 FriendshipSchema.index({ requesterId: 1, receiverId: 1 }, { unique: true });
 FriendshipSchema.index({ receiverId: 1, status: 1 });
+FriendshipSchema.index({ blockedBy: 1, status: 1 });
 
 const ConversationSchema = new Schema(
   {
@@ -309,8 +358,15 @@ const FcmTokenSchema = new Schema(
     },
     token: {
       type: String,
-      required: true,
+      trim: true
+    },
+    tokenEncrypted: {
+      type: String
+    },
+    tokenHash: {
+      type: String,
       unique: true,
+      sparse: true,
       trim: true
     },
     platform: {
@@ -332,6 +388,15 @@ const FcmTokenSchema = new Schema(
 
 FcmTokenSchema.index({ userId: 1, platform: 1 });
 FcmTokenSchema.index({ lastSeenAt: 1 });
+
+FcmTokenSchema.set('toJSON', {
+  transform(_document, returnedToken) {
+    delete returnedToken.token;
+    delete returnedToken.tokenEncrypted;
+    delete returnedToken.tokenHash;
+    return returnedToken;
+  },
+});
 
 export const User = model('User', UserSchema);
 export const Friendship = model('Friendship', FriendshipSchema);

@@ -1,27 +1,38 @@
 import { OAuth2Client } from 'google-auth-library';
+import {
+  getUserPrivateField,
+} from './userPrivacyService.js';
+import { setEncryptedField } from './dataEncryptionService.js';
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const oauthClient = new OAuth2Client(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET);
 
 export async function getFreshGoogleAccessToken(user) {
+  const accessToken = getUserPrivateField(user, 'googleAccessToken');
+  const refreshToken = getUserPrivateField(user, 'googleRefreshToken');
+
   if (
-    user.googleAccessToken &&
+    accessToken &&
     user.googleTokenExpiry &&
     new Date(user.googleTokenExpiry).getTime() > Date.now() + 60 * 1000
   ) {
-    return user.googleAccessToken;
+    return accessToken;
   }
 
-  if (!user.googleRefreshToken) {
-    return user.googleAccessToken;
+  if (!refreshToken) {
+    return accessToken;
   }
 
-  oauthClient.setCredentials({ refresh_token: user.googleRefreshToken });
+  oauthClient.setCredentials({ refresh_token: refreshToken });
   const { credentials } = await oauthClient.refreshAccessToken();
 
+  if (refreshToken && !user.googleRefreshTokenEncrypted) {
+    setEncryptedField(user, 'googleRefreshToken', refreshToken);
+  }
+
   if (credentials.access_token) {
-    user.googleAccessToken = credentials.access_token;
+    setEncryptedField(user, 'googleAccessToken', credentials.access_token);
   }
 
   if (credentials.expiry_date) {
@@ -30,5 +41,5 @@ export async function getFreshGoogleAccessToken(user) {
 
   await user.save();
 
-  return user.googleAccessToken;
+  return getUserPrivateField(user, 'googleAccessToken');
 }

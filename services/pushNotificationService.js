@@ -1,4 +1,5 @@
 import { FcmToken } from '../models/appModels.js';
+import { decryptValue } from './dataEncryptionService.js';
 import { getFirebaseMessaging } from './firebaseAdminService.js';
 
 const INVALID_TOKEN_ERRORS = new Set([
@@ -12,6 +13,24 @@ function stringifyData(data = {}) {
       .filter(([, value]) => value !== undefined && value !== null)
       .map(([key, value]) => [key, String(value)])
   );
+}
+
+function looksLikeTokenHash(value) {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value);
+}
+
+function getPushTokenValue(tokenDoc) {
+  const encryptedToken = tokenDoc.tokenEncrypted ? decryptValue(tokenDoc.tokenEncrypted) : null;
+
+  if (encryptedToken) {
+    return encryptedToken;
+  }
+
+  if (!tokenDoc.token || looksLikeTokenHash(tokenDoc.token)) {
+    return null;
+  }
+
+  return tokenDoc.token;
 }
 
 export async function sendPushToUsers({ userIds, title, body, data }) {
@@ -34,9 +53,24 @@ export async function sendPushToUsers({ userIds, title, body, data }) {
     return { sentCount: 0, skipped: false };
   }
 
+  const sendableTokens = tokens
+    .map((tokenDoc) => ({
+      tokenDoc,
+      token: getPushTokenValue(tokenDoc),
+    }))
+    .filter((entry) => entry.token);
+
+  if (!sendableTokens.length) {
+    console.warn('No decryptable FCM tokens registered for push recipients.', {
+      recipientCount: userIds.length,
+      type: data?.type,
+    });
+    return { sentCount: 0, skipped: false };
+  }
+
   const results = await Promise.allSettled(
-    tokens.map((tokenDoc) => messaging.send({
-      token: tokenDoc.token,
+    sendableTokens.map(({ token }) => messaging.send({
+      token,
       notification: {
         title,
         body,
@@ -45,7 +79,7 @@ export async function sendPushToUsers({ userIds, title, body, data }) {
     }))
   );
 
-  const invalidTokens = [];
+  const invalidTokenIds = [];
   let sentCount = 0;
 
   results.forEach((result, index) => {
@@ -57,23 +91,23 @@ export async function sendPushToUsers({ userIds, title, body, data }) {
     const errorCode = result.reason?.errorInfo?.code || result.reason?.code;
 
     if (INVALID_TOKEN_ERRORS.has(errorCode)) {
-      invalidTokens.push(tokens[index].token);
+      invalidTokenIds.push(sendableTokens[index].tokenDoc._id);
     } else {
       console.warn('FCM send failed:', {
-        tokenId: tokens[index]._id.toString(),
+        tokenId: sendableTokens[index].tokenDoc._id.toString(),
         errorCode,
         message: result.reason?.message,
       });
     }
   });
 
-  if (invalidTokens.length) {
-    await FcmToken.deleteMany({ token: { $in: invalidTokens } });
+  if (invalidTokenIds.length) {
+    await FcmToken.deleteMany({ _id: { $in: invalidTokenIds } });
   }
 
   return {
     sentCount,
     failedCount: results.length - sentCount,
-    removedInvalidTokenCount: invalidTokens.length,
+    removedInvalidTokenCount: invalidTokenIds.length,
   };
 }

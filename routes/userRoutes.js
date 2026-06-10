@@ -1,6 +1,7 @@
 import express from 'express';
 import { User } from '../models/appModels.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { buildUserUpdateDocument } from '../services/userPrivacyService.js';
 
 const router = express.Router();
 
@@ -24,7 +25,11 @@ router.put('/:id', protect, async (req, res) => {
       Object.entries(allowedUpdates).filter(([, value]) => value !== undefined)
     );
 
-    const user = await User.findByIdAndUpdate(req.params.id, updates, { new: true, runValidators: true });
+    const user = await User.findByIdAndUpdate(
+      req.params.id,
+      buildUserUpdateDocument(updates),
+      { new: true, runValidators: true }
+    );
     if (!user) return res.status(404).json({ error: 'User not found' });
     res.json(user);
   } catch (err) {
