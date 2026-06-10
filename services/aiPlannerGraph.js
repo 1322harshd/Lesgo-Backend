@@ -2,10 +2,47 @@ import { ChatOpenAI } from '@langchain/openai';
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 import { AgentConversation } from '../models/appModels.js';
-import { cancelPlan, createPlan, getAcceptedFriends, getUserPlans, suggestHangout } from './suggestionsService.js';
+import {
+  cancelPlan,
+  createPlan,
+  extractSearchRadiusMetersFromText,
+  getAcceptedFriends,
+  getUserPlans,
+  increaseSearchRadiusMeters,
+  normalizeSearchRadiusMeters,
+  suggestHangout,
+} from './suggestionsService.js';
 
 const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'gpt-5.4-mini';
 const MAX_CONTEXT_MESSAGES = 12;
+const DEFAULT_AGENT_DAILY_MESSAGE_LIMIT = 40;
+const DEFAULT_AGENT_CONVERSATION_MESSAGE_LIMIT = 20;
+const DEFAULT_AGENT_DAILY_CONVERSATION_LIMIT = 8;
+const DEFAULT_AGENT_MESSAGE_CHAR_LIMIT = 600;
+const AGENT_USAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+function readPositiveIntegerEnv(name, fallback) {
+  const value = Number(process.env[name]);
+
+  if (!Number.isInteger(value) || value <= 0) {
+    return fallback;
+  }
+
+  return value;
+}
+
+const AGENT_LIMITS = {
+  dailyMessageLimit: readPositiveIntegerEnv('AGENT_DAILY_MESSAGE_LIMIT', DEFAULT_AGENT_DAILY_MESSAGE_LIMIT),
+  conversationMessageLimit: readPositiveIntegerEnv(
+    'AGENT_CONVERSATION_MESSAGE_LIMIT',
+    DEFAULT_AGENT_CONVERSATION_MESSAGE_LIMIT
+  ),
+  dailyConversationLimit: readPositiveIntegerEnv(
+    'AGENT_DAILY_CONVERSATION_LIMIT',
+    DEFAULT_AGENT_DAILY_CONVERSATION_LIMIT
+  ),
+  messageCharLimit: readPositiveIntegerEnv('AGENT_MESSAGE_CHAR_LIMIT', DEFAULT_AGENT_MESSAGE_CHAR_LIMIT),
+};
 
 //defining 'Plannerstate' for shape of state data flowing through the graph
 const PlannerState = Annotation.Root({
@@ -25,6 +62,101 @@ function createModel() {
     model: DEFAULT_MODEL,
     temperature: 0.2,
   });
+}
+
+function agentLimitError(message, limitDetails) {
+  const error = new Error(message);
+  error.statusCode = 429;
+  error.limitDetails = limitDetails;
+  return error;
+}
+
+function usageWindowStart(now = new Date()) {
+  return new Date(now.getTime() - AGENT_USAGE_WINDOW_MS);
+}
+
+function countConversationUserMessages(conversation) {
+  return (conversation.messages ?? []).filter((message) => message.role === 'user').length;
+}
+
+async function getUserAgentMessagesInWindow(userId, windowStart) {
+  const conversations = await AgentConversation.find({
+    userId,
+    'messages.createdAt': { $gte: windowStart },
+  }).select('messages.role messages.createdAt');
+
+  return conversations
+    .flatMap((conversation) => conversation.messages ?? [])
+    .filter((message) => message.role === 'user' && new Date(message.createdAt).getTime() >= windowStart.getTime());
+}
+
+async function assertAgentConversationStartAllowed(userId) {
+  const windowStart = usageWindowStart();
+  const conversationCount = await AgentConversation.countDocuments({
+    userId,
+    createdAt: { $gte: windowStart },
+  });
+
+  if (conversationCount >= AGENT_LIMITS.dailyConversationLimit) {
+    throw agentLimitError(
+      `AI planner conversation limit reached. You can start ${AGENT_LIMITS.dailyConversationLimit} AI conversations per 24 hours.`,
+      {
+        type: 'daily_conversation_limit',
+        limit: AGENT_LIMITS.dailyConversationLimit,
+        used: conversationCount,
+        windowHours: 24,
+      }
+    );
+  }
+}
+
+async function assertAgentMessageAllowed({ userId, conversation, message }) {
+  if (message.length > AGENT_LIMITS.messageCharLimit) {
+    const error = new Error(`Message is too long. Keep AI planner messages under ${AGENT_LIMITS.messageCharLimit} characters.`);
+    error.statusCode = 413;
+    error.limitDetails = {
+      type: 'message_length_limit',
+      limit: AGENT_LIMITS.messageCharLimit,
+      used: message.length,
+    };
+    throw error;
+  }
+
+  const conversationMessageCount = countConversationUserMessages(conversation);
+
+  if (conversationMessageCount >= AGENT_LIMITS.conversationMessageLimit) {
+    throw agentLimitError(
+      `This AI conversation has reached its ${AGENT_LIMITS.conversationMessageLimit} message limit. Start a new AI planner chat later.`,
+      {
+        type: 'conversation_message_limit',
+        limit: AGENT_LIMITS.conversationMessageLimit,
+        used: conversationMessageCount,
+      }
+    );
+  }
+
+  const windowStart = usageWindowStart();
+  const recentMessages = await getUserAgentMessagesInWindow(userId, windowStart);
+
+  if (recentMessages.length >= AGENT_LIMITS.dailyMessageLimit) {
+    const oldestMessage = recentMessages
+      .map((message) => new Date(message.createdAt))
+      .sort((first, second) => first.getTime() - second.getTime())[0];
+    const resetAt = oldestMessage
+      ? new Date(oldestMessage.getTime() + AGENT_USAGE_WINDOW_MS)
+      : new Date(Date.now() + AGENT_USAGE_WINDOW_MS);
+
+    throw agentLimitError(
+      `AI planner limit reached. You can send ${AGENT_LIMITS.dailyMessageLimit} AI planner messages per 24 hours.`,
+      {
+        type: 'daily_message_limit',
+        limit: AGENT_LIMITS.dailyMessageLimit,
+        used: recentMessages.length,
+        windowHours: 24,
+        resetAt,
+      }
+    );
+  }
 }
 
 //helper function to normalise response from OpenAi into simple string
@@ -65,6 +197,7 @@ function normalizePlannerIntent(intent, userMessage) {
     dateFrom: intent.dateFrom ? String(intent.dateFrom) : null,
     dateTo: intent.dateTo ? String(intent.dateTo) : null,
     durationMinutes: Number.isFinite(Number(intent.durationMinutes)) ? Number(intent.durationMinutes) : null,
+    searchRadiusMeters: Number.isFinite(Number(intent.searchRadiusMeters)) ? Number(intent.searchRadiusMeters) : null,
     title: intent.title ? String(intent.title) : null,
     selectedSuggestionIndex: inferSelectedSuggestionIndex(userMessage, Number.isInteger(intent.selectedSuggestionIndex) ? intent.selectedSuggestionIndex : null),
     selectedPlanIndex: inferSelectedSuggestionIndex(userMessage, Number.isInteger(intent.selectedPlanIndex) ? intent.selectedPlanIndex : null),
@@ -153,6 +286,12 @@ function isCancelPlanMessage(message) {
     /\b(plan|plans|booking|hangout|event|first|second|third|option|#?\d)\b/i.test(message);
 }
 
+function isSearchRadiusPrompt(message) {
+  const text = String(message || '');
+  return /\b(radius|search area|wider|broader|expand|farther|further|further away|farther away|more places|more options|within\s+\d)\b/i.test(text) ||
+    (/\bincrease\b/i.test(text) && /\b(radius|search|area|distance|range)\b/i.test(text));
+}
+
 function inferSelectedSuggestionIndex(message, parsedIndex) {
   if (Number.isInteger(parsedIndex) && parsedIndex >= 0) {
     return parsedIndex;
@@ -167,18 +306,45 @@ function inferSelectedSuggestionIndex(message, parsedIndex) {
   return null;
 }
 
-function formatSuggestionsReply(suggestions) {
+function getRequestedSearchRadiusMeters(message, parsedRadiusMeters) {
+  const extractedRadiusMeters = extractSearchRadiusMetersFromText(message);
+
+  if (extractedRadiusMeters !== null) {
+    return normalizeSearchRadiusMeters(extractedRadiusMeters);
+  }
+
+  if (Number.isFinite(Number(parsedRadiusMeters)) && isSearchRadiusPrompt(message)) {
+    return normalizeSearchRadiusMeters(parsedRadiusMeters);
+  }
+
+  return null;
+}
+
+function formatSearchRadius(radiusMeters) {
+  if (!Number.isFinite(Number(radiusMeters))) {
+    return null;
+  }
+
+  if (radiusMeters >= 1000) {
+    return `${Math.round((radiusMeters / 1000) * 10) / 10}km`;
+  }
+
+  return `${radiusMeters}m`;
+}
+
+function formatSuggestionsReply(suggestions, { searchRadiusMeters, mentionRadius = false } = {}) {
   if (!suggestions.length) {
     return 'I could not find a free slot for that plan. Want to try a wider time range or a shorter duration?';
   }
 
+  const radiusLabel = mentionRadius ? formatSearchRadius(searchRadiusMeters) : null;
   const options = suggestions
     .map((suggestion, index) => (
       `${index + 1}. ${suggestion.time.label} at ${suggestion.place.name}`
     ))
     .join('\n');
 
-  return `I found these options:\n${options}\n\nWhich one should I create?`;
+  return `${radiusLabel ? `I searched within ${radiusLabel}.\n` : ''}I found these options:\n${options}\n\nWhich one should I create?`;
 }
 
 function formatPlansReply(plans) {
@@ -228,6 +394,7 @@ async function parsePlannerIntent({ conversation, userMessage, friends }) {
       dateFrom: null,
       dateTo: null,
       durationMinutes: null,
+      searchRadiusMeters: null,
       title: null,
       selectedSuggestionIndex: inferSelectedSuggestionIndex(userMessage, null),
       selectedPlanIndex: inferSelectedSuggestionIndex(userMessage, null),
@@ -255,6 +422,8 @@ Rules:
 - If the user asks to see, list, show, or check upcoming plans, use action "list_plans".
 - If the user asks to cancel/delete/remove an upcoming plan, use action "cancel_plan".
 - For cancel_plan, set selectedPlanIndex when they choose a numbered listed plan, and set title when they mention a plan name or place.
+- Only set searchRadiusMeters when the user explicitly asks to increase/widen/expand the search radius or gives a radius/distance like "within 10km".
+- If the user does not mention search radius, leave searchRadiusMeters as null.
 - For simple greetings or non-planning chat, use action "general_reply".
 - Return only a JSON object. Do not use markdown.
 
@@ -268,6 +437,7 @@ JSON shape:
   "dateFrom": null,
   "dateTo": null,
   "durationMinutes": null,
+  "searchRadiusMeters": null,
   "title": null,
   "selectedSuggestionIndex": null,
   "selectedPlanIndex": null,
@@ -307,6 +477,7 @@ ${recentMessages(conversation)}`),
       dateFrom: null,
       dateTo: null,
       durationMinutes: null,
+      searchRadiusMeters: null,
       title: null,
       selectedSuggestionIndex: inferSelectedSuggestionIndex(userMessage, null),
       selectedPlanIndex: inferSelectedSuggestionIndex(userMessage, null),
@@ -342,8 +513,10 @@ async function plannerNode(state) {
   const selectedPlanIndex = inferSelectedSuggestionIndex(userMessage, intent.selectedPlanIndex);
   const lastSuggestions = conversation.agentState?.lastSuggestions ?? [];
   const lastPlans = conversation.agentState?.lastPlans ?? [];
+  const lastSuggestionRequest = conversation.agentState?.lastSuggestionRequest ?? null;
   const pendingCancelPlan = conversation.agentState?.pendingCancelPlan ?? null;
   const isConfirmingSuggestion = isConfirmationMessage(userMessage) && lastSuggestions.length > 0;
+  const requestedSearchRadiusMeters = getRequestedSearchRadiusMeters(userMessage, intent.searchRadiusMeters);
   if (lastPlans.length && /\bcancel\b/i.test(userMessage)) {
     intent.action = 'cancel_plan';
   }
@@ -372,6 +545,42 @@ async function plannerNode(state) {
           ...conversation.agentState,
           pendingCancelPlan: null,
           lastPlans: [],
+        },
+      },
+    };
+  }
+
+  if (isSearchRadiusPrompt(userMessage) && lastSuggestionRequest) {
+    const nextSearchRadiusMeters = requestedSearchRadiusMeters ??
+      increaseSearchRadiusMeters(lastSuggestionRequest.searchRadiusMeters);
+    const suggestionResult = await suggestHangout(userId, {
+      ...lastSuggestionRequest,
+      searchRadiusMeters: nextSearchRadiusMeters,
+    });
+    const nextSuggestionRequest = {
+      ...lastSuggestionRequest,
+      searchRadiusMeters: suggestionResult.searchRadiusMeters,
+    };
+
+    return {
+      result: {
+        reply: formatSuggestionsReply(suggestionResult.suggestions, {
+          searchRadiusMeters: suggestionResult.searchRadiusMeters,
+          mentionRadius: true,
+        }),
+        suggestions: suggestionResult.suggestions,
+        searchRadiusMeters: suggestionResult.searchRadiusMeters,
+        calendarStatus: suggestionResult.calendarStatus,
+        nextAgentState: {
+          ...conversation.agentState,
+          lastSuggestions: suggestionResult.suggestions,
+          lastSuggestionRequest: nextSuggestionRequest,
+          lastPlans: [],
+          pendingIntent: {
+            ...(conversation.agentState?.pendingIntent ?? {}),
+            searchRadiusMeters: suggestionResult.searchRadiusMeters,
+          },
+          awaitingConfirmation: suggestionResult.suggestions.length > 0,
         },
       },
     };
@@ -468,7 +677,7 @@ async function plannerNode(state) {
       startsAt: suggestion.time.start,
       endsAt: suggestion.time.end,
       place: suggestion.place,
-      activityType: intent.activityType,
+      activityType: lastSuggestionRequest?.activityType ?? intent.activityType,
     });
 
     return {
@@ -513,18 +722,35 @@ async function plannerNode(state) {
     dateTo: intent.dateTo,
     durationMinutes: intent.durationMinutes,
     activityType: intent.activityType,
+    ...(requestedSearchRadiusMeters !== null ? { searchRadiusMeters: requestedSearchRadiusMeters } : {}),
   });
+  const lastSuggestionRequestForState = {
+    participantIds,
+    dateFrom: intent.dateFrom,
+    dateTo: intent.dateTo,
+    durationMinutes: intent.durationMinutes,
+    activityType: intent.activityType,
+    searchRadiusMeters: suggestionResult.searchRadiusMeters,
+  };
 
   return {
     result: {
-      reply: formatSuggestionsReply(suggestionResult.suggestions),
+      reply: formatSuggestionsReply(suggestionResult.suggestions, {
+        searchRadiusMeters: suggestionResult.searchRadiusMeters,
+        mentionRadius: requestedSearchRadiusMeters !== null,
+      }),
       suggestions: suggestionResult.suggestions,
+      searchRadiusMeters: suggestionResult.searchRadiusMeters,
       calendarStatus: suggestionResult.calendarStatus,
       nextAgentState: {
         ...conversation.agentState,
         lastSuggestions: suggestionResult.suggestions,
+        lastSuggestionRequest: lastSuggestionRequestForState,
         lastPlans: [],
-        pendingIntent: intent,
+        pendingIntent: {
+          ...intent,
+          searchRadiusMeters: suggestionResult.searchRadiusMeters,
+        },
         awaitingConfirmation: suggestionResult.suggestions.length > 0,
       },
     },
@@ -540,6 +766,8 @@ const plannerGraph = new StateGraph(PlannerState)
   //function to create new conversation in database 
   //returns new conversation id and initial reply
 export async function startAgentConversation(userId) {
+  await assertAgentConversationStartAllowed(userId);
+
   const conversation = await AgentConversation.create({
     userId,
     title: 'AI planner',
@@ -575,6 +803,12 @@ export async function sendAgentMessage({ userId, conversationId, message }) {
     throw error;
   }
 
+  await assertAgentMessageAllowed({
+    userId,
+    conversation,
+    message: trimmedMessage,
+  });
+
   conversation.messages.push({
     role: 'user',
     content: trimmedMessage,
@@ -597,6 +831,7 @@ export async function sendAgentMessage({ userId, conversationId, message }) {
       plan: result.plan,
       plans: result.plans,
       cancelResult: result.cancelResult,
+      searchRadiusMeters: result.searchRadiusMeters,
       calendarStatus: result.calendarStatus,
     },
   });
@@ -610,6 +845,7 @@ export async function sendAgentMessage({ userId, conversationId, message }) {
     plan: result.plan,
     plans: result.plans ?? [],
     cancelResult: result.cancelResult,
+    searchRadiusMeters: result.searchRadiusMeters,
     calendarStatus: result.calendarStatus ?? [],
   };
 }

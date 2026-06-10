@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { Conversation, Friendship, Message, Plan, User } from '../models/appModels.js';
 import { getFreshGoogleAccessToken } from './googleAuthService.js';
 import { createAndSendNotifications } from './notificationService.js';
+import { getUserPrivateField } from './userPrivacyService.js';
 
 const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY || process.env.GOOGLE_PLACES_API_KEY;
 
@@ -9,6 +10,10 @@ const WORK_DAY_START_HOUR = 9;
 const WORK_DAY_END_HOUR = 22;
 const MAX_SLOTS = 5;
 const MAX_PLACE_RESULTS = 10;
+export const DEFAULT_SEARCH_RADIUS_METERS = 5000;
+export const EXPANDED_SEARCH_RADIUS_METERS = 15000;
+export const MAX_SEARCH_RADIUS_METERS = 50000;
+export const MIN_SEARCH_RADIUS_METERS = 500;
 
 // Converts incoming string ids into MongoDB ObjectIds, and returns null for invalid ids.
 export function toObjectId(id) {
@@ -26,9 +31,9 @@ export function userSummary(user) {
     name: user.name,
     email: user.email,
     profilePicture: user.profilePicture,
-    homeArea: user.homeArea,
-    homeLat: user.homeLat,
-    homeLng: user.homeLng,
+    homeArea: getUserPrivateField(user, 'homeArea'),
+    homeLat: getUserPrivateField(user, 'homeLat'),
+    homeLng: getUserPrivateField(user, 'homeLng'),
   };
 }
 
@@ -268,7 +273,12 @@ function findCommonFreeSlots(calendarResults, dateFrom, dateTo, durationMinutes)
 // If nobody has a saved location, the app falls back to Auckland CBD.
 function calculateMidpoint(users) {
   const locatedUsers = users.filter(
-    (user) => Number.isFinite(user.homeLat) && Number.isFinite(user.homeLng)
+    (user) => {
+      const homeLat = Number(getUserPrivateField(user, 'homeLat'));
+      const homeLng = Number(getUserPrivateField(user, 'homeLng'));
+
+      return Number.isFinite(homeLat) && Number.isFinite(homeLng);
+    }
   );
 
   if (!locatedUsers.length) {
@@ -276,8 +286,8 @@ function calculateMidpoint(users) {
   }
 
   return {
-    lat: locatedUsers.reduce((sum, user) => sum + user.homeLat, 0) / locatedUsers.length,
-    lng: locatedUsers.reduce((sum, user) => sum + user.homeLng, 0) / locatedUsers.length,
+    lat: locatedUsers.reduce((sum, user) => sum + Number(getUserPrivateField(user, 'homeLat')), 0) / locatedUsers.length,
+    lng: locatedUsers.reduce((sum, user) => sum + Number(getUserPrivateField(user, 'homeLng')), 0) / locatedUsers.length,
   };
 }
 
@@ -291,6 +301,84 @@ function placesTypesForActivity(activityType) {
   };
 
   return typeMap[activityType] ?? typeMap.food;
+}
+
+function getSearchRadiusInput(input) {
+  if (input.searchRadiusMeters !== undefined) return input.searchRadiusMeters;
+  if (input.radiusMeters !== undefined) return input.radiusMeters;
+  if (input.radiusKm !== undefined) return Number(input.radiusKm) * 1000;
+  if (input.searchRadiusKm !== undefined) return Number(input.searchRadiusKm) * 1000;
+  if (input.radius !== undefined) return input.radius;
+  return undefined;
+}
+
+export function normalizeSearchRadiusMeters(input) {
+  if (input === undefined || input === null || input === '') {
+    return DEFAULT_SEARCH_RADIUS_METERS;
+  }
+
+  const textInput = typeof input === 'string' ? input.trim().toLowerCase() : '';
+  const distanceMatch = textInput.match(/^(\d+(?:\.\d+)?)\s*(km|kilometer|kilometers|m|meter|meters|mi|mile|miles)?$/i);
+  let radiusMeters = Number(input);
+
+  if (distanceMatch) {
+    const amount = Number(distanceMatch[1]);
+    const unit = (distanceMatch[2] || 'm').toLowerCase();
+
+    if (['km', 'kilometer', 'kilometers'].includes(unit)) {
+      radiusMeters = amount * 1000;
+    } else if (['mi', 'mile', 'miles'].includes(unit)) {
+      radiusMeters = amount * 1609.344;
+    } else {
+      radiusMeters = amount;
+    }
+  }
+
+  if (
+    !Number.isFinite(radiusMeters) ||
+    radiusMeters < MIN_SEARCH_RADIUS_METERS ||
+    radiusMeters > MAX_SEARCH_RADIUS_METERS
+  ) {
+    const error = new Error(
+      `Search radius must be between ${MIN_SEARCH_RADIUS_METERS} and ${MAX_SEARCH_RADIUS_METERS} meters.`
+    );
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return Math.round(radiusMeters);
+}
+
+export function extractSearchRadiusMetersFromText(message) {
+  const text = String(message || '').toLowerCase();
+  const radiusContext = /\b(radius|within|inside|around|nearby|near|farther|further|wider|broader|expand|increase|larger search|search area)\b/i;
+  const distanceMatch = text.match(/\b(\d+(?:\.\d+)?)\s*(km|kilometer|kilometers|m|meter|meters|mi|mile|miles)\b/i);
+
+  if (!distanceMatch || !radiusContext.test(text)) {
+    return null;
+  }
+
+  const amount = Number(distanceMatch[1]);
+  const unit = distanceMatch[2].toLowerCase();
+
+  if (!Number.isFinite(amount)) {
+    return null;
+  }
+
+  if (['km', 'kilometer', 'kilometers'].includes(unit)) {
+    return amount * 1000;
+  }
+
+  if (['mi', 'mile', 'miles'].includes(unit)) {
+    return amount * 1609.344;
+  }
+
+  return amount;
+}
+
+export function increaseSearchRadiusMeters(currentRadiusMeters) {
+  const currentRadius = normalizeSearchRadiusMeters(currentRadiusMeters);
+  return Math.min(MAX_SEARCH_RADIUS_METERS, Math.max(EXPANDED_SEARCH_RADIUS_METERS, currentRadius * 2));
 }
 
 // Places API returns popular places in a stable order, so shuffle them before pairing
@@ -307,8 +395,9 @@ function shufflePlaces(places) {
 }
 
 // Looks for nearby places that match the activity type around the group's midpoint.
-async function fetchPlaceSuggestions({ users, activityType }) {
+async function fetchPlaceSuggestions({ users, activityType, searchRadiusMeters }) {
   const midpoint = calculateMidpoint(users);
+  const radiusMeters = normalizeSearchRadiusMeters(searchRadiusMeters);
 
   if (!GOOGLE_MAPS_API_KEY) {
     return fallbackPlaces(midpoint, activityType);
@@ -332,7 +421,7 @@ async function fetchPlaceSuggestions({ users, activityType }) {
             latitude: midpoint.lat,
             longitude: midpoint.lng,
           },
-          radius: 5000,
+          radius: radiusMeters,
         },
       },
     }),
@@ -448,6 +537,7 @@ export async function suggestHangout(currentUserId, input) {
   const durationMinutes = Number(input.durationMinutes || 120);
   const participantIds = Array.isArray(input.participantIds) ? input.participantIds : [];
   const activityType = String(input.activityType || 'food').trim() || 'food';
+  const searchRadiusMeters = normalizeSearchRadiusMeters(getSearchRadiusInput(input));
 
   if (!participantIds.length) {
     const error = new Error('Choose at least one friend.');
@@ -470,7 +560,7 @@ export async function suggestHangout(currentUserId, input) {
   const users = await loadSuggestionUsers(currentUserId, participantIds);
   const [calendarResults, places] = await Promise.all([
     Promise.all(users.map((user) => fetchBusyBlocks(user, dateFrom, dateTo))),
-    fetchPlaceSuggestions({ users, activityType }),
+    fetchPlaceSuggestions({ users, activityType, searchRadiusMeters }),
   ]);
   const slots = findCommonFreeSlots(calendarResults, dateFrom, dateTo, durationMinutes);
 
@@ -478,6 +568,7 @@ export async function suggestHangout(currentUserId, input) {
 
   return {
     suggestions,
+    searchRadiusMeters,
     calendarStatus: calendarResults.map((calendar) => ({
       userId: calendar.userId,
       calendarConnected: calendar.calendarConnected,

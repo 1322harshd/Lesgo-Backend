@@ -41,6 +41,7 @@ router.post('/hangout', async (req, res) => {
       userId: req.user.userId,
       participantCount: Array.isArray(req.body.participantIds) ? req.body.participantIds.length : 0,
       activityType: req.body.activityType,
+      searchRadiusMeters: req.body.searchRadiusMeters ?? req.body.radiusMeters ?? req.body.radiusKm ?? req.body.searchRadiusKm ?? req.body.radius,
     });
 
     const result = await suggestHangout(req.user.userId, req.body);

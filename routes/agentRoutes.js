@@ -6,6 +6,13 @@ const router = express.Router();
 
 router.use(protect);
 
+function sendAgentError(res, error) {
+  res.status(error.statusCode || 400).json({
+    message: error.message,
+    limit: error.limitDetails,
+  });
+}
+
 router.get('/health', (req, res) => {
   res.json({
     ok: true,
@@ -20,7 +27,7 @@ router.post('/conversation/start', async (req, res) => {
     const result = await startAgentConversation(req.user.userId);
     res.status(201).json(result);
   } catch (error) {
-    res.status(error.statusCode || 400).json({ message: error.message });
+    sendAgentError(res, error);
   }
 });
 
@@ -35,7 +42,7 @@ router.post('/chat', async (req, res) => {
 
     res.json(result);
   } catch (error) {
-    res.status(error.statusCode || 400).json({ message: error.message });
+    sendAgentError(res, error);
   }
 });
 

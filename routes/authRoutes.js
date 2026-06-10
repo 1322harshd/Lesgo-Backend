@@ -2,6 +2,11 @@ import express from 'express';
 import { OAuth2Client } from 'google-auth-library';
 import jwt from 'jsonwebtoken';
 import { User } from '../models/appModels.js';
+import {
+  buildUserCreateDocument,
+  buildUserUpdateDocument,
+  hasUserPrivateField,
+} from '../services/userPrivacyService.js';
 
 const router = express.Router();
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
@@ -186,7 +191,7 @@ router.post('/google', async (req, res) => {
       });
     }
 
-    const userUpdate = removeEmptyValues({
+    const userUpdateInput = removeEmptyValues({
       googleId: googleProfile.googleId,
       email: googleProfile.email,
       name: googleProfile.name || googleProfile.email,
@@ -199,21 +204,28 @@ router.post('/google', async (req, res) => {
       googleTokenExpiry: isSignup ? googleTokenExpiry : undefined,
     });
 
-    const user = existingUser
-      ? await User.findByIdAndUpdate(
-          existingUser._id,
-          {
-            $set: {
-              ...userUpdate,
-              friendCode: existingUser.friendCode || await generateFriendCode(),
-            },
-          },
-          { new: true, runValidators: true }
-        )
-      : await User.create({
-          ...userUpdate,
-          friendCode: await generateFriendCode(),
-        });
+    let user;
+
+    if (existingUser) {
+      const updateDocument = buildUserUpdateDocument(userUpdateInput);
+      const friendCode = existingUser.friendCode || await generateFriendCode();
+
+      updateDocument.$set = {
+        ...(updateDocument.$set || {}),
+        friendCode,
+      };
+
+      user = await User.findByIdAndUpdate(
+        existingUser._id,
+        updateDocument,
+        { new: true, runValidators: true }
+      );
+    } else {
+      user = await User.create({
+        ...buildUserCreateDocument(userUpdateInput),
+        friendCode: await generateFriendCode(),
+      });
+    }
 
     const token = jwt.sign(
       { userId: user._id, email: user.email },
@@ -225,8 +237,8 @@ router.post('/google', async (req, res) => {
       id: user._id,
       googleId: user.googleId,
       email: user.email,
-      hasAccessToken: Boolean(user.googleAccessToken),
-      hasRefreshToken: Boolean(user.googleRefreshToken),
+      hasAccessToken: hasUserPrivateField(user, 'googleAccessToken'),
+      hasRefreshToken: hasUserPrivateField(user, 'googleRefreshToken'),
       googleTokenExpiry: user.googleTokenExpiry,
     });
 

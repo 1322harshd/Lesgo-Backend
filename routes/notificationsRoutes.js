@@ -1,6 +1,7 @@
 import express from 'express';
 import { protect } from '../middleware/authMiddleware.js';
 import { FcmToken, Notification } from '../models/appModels.js';
+import { encryptValue, hashLookupValue } from '../services/dataEncryptionService.js';
 
 const router = express.Router();
 
@@ -72,23 +73,26 @@ router.post('/fcm-token', async (req, res) => {
       hasDeviceId: Boolean(deviceId),
     });
 
-    const tokenDoc = await FcmToken.findOneAndUpdate(
-      { token },
-      {
-        $set: {
-          userId: req.user.userId,
-          token,
-          platform,
-          deviceId,
-          lastSeenAt: new Date(),
-        },
-      },
-      {
-        new: true,
-        upsert: true,
-        setDefaultsOnInsert: true,
-      }
-    );
+    const tokenHash = hashLookupValue(token);
+    let tokenDoc = await FcmToken.findOne({
+      $or: [
+        { tokenHash },
+        { token },
+      ],
+    });
+
+    if (!tokenDoc) {
+      tokenDoc = new FcmToken();
+    }
+
+    tokenDoc.userId = req.user.userId;
+    tokenDoc.token = tokenHash;
+    tokenDoc.tokenHash = tokenHash;
+    tokenDoc.tokenEncrypted = encryptValue(token);
+    tokenDoc.platform = platform;
+    tokenDoc.deviceId = deviceId;
+    tokenDoc.lastSeenAt = new Date();
+    await tokenDoc.save();
 
     res.status(201).json({
       fcmToken: {
@@ -111,9 +115,14 @@ router.delete('/fcm-token', async (req, res) => {
       return res.status(400).json({ message: 'FCM token is required.' });
     }
 
+    const tokenHash = hashLookupValue(token);
+
     await FcmToken.deleteOne({
       userId: req.user.userId,
-      token,
+      $or: [
+        { tokenHash },
+        { token },
+      ],
     });
 
     res.status(204).send();

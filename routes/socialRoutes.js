@@ -43,6 +43,8 @@ function friendshipSummary(friendship, currentUserId) {
   return {
     id: friendship._id.toString(),
     status: friendship.status,
+    blockedBy: friendship.blockedBy?.toString?.() || null,
+    blockedAt: friendship.blockedAt,
     createdAt: friendship.createdAt,
     requester,
     receiver,
@@ -92,15 +94,24 @@ function previewText(value, maxLength = 120) {
   return `${text.slice(0, maxLength - 3)}...`;
 }
 
+function idString(value) {
+  return value?._id?.toString?.() || value?.toString?.() || '';
+}
+
 //helper function for looking up friendship between two people
 async function findFriendship(userId, otherUserId, status) {
-  return Friendship.findOne({
-    status,
+  const query = {
     $or: [
       { requesterId: userId, receiverId: otherUserId },
       { requesterId: otherUserId, receiverId: userId },
     ],
-  });
+  };
+
+  if (status) {
+    query.status = status;
+  }
+
+  return Friendship.findOne(query);
 }
 
 //security check to ensure current user is actually a participant in that conversation
@@ -115,6 +126,25 @@ async function ensureConversationParticipant(conversationId, userId) {
   }
 
   return conversation;
+}
+
+function getOtherParticipantId(conversation, userId) {
+  if (conversation.type !== 'direct') {
+    return null;
+  }
+
+  return conversation.participants.find((participant) => idString(participant) !== userId.toString()) ?? null;
+}
+
+async function ensureDirectConversationNotBlocked(conversation, userId) {
+  const otherParticipantId = getOtherParticipantId(conversation, userId);
+
+  if (!otherParticipantId) {
+    return true;
+  }
+
+  const friendship = await findFriendship(toObjectId(userId), toObjectId(idString(otherParticipantId)));
+  return friendship?.status === 'accepted';
 }
 
 //route for looking a user from their friend code
@@ -241,7 +271,7 @@ router.post('/friends/:id/accept', async (req, res) => {
         receiverId: req.user.userId,
         status: 'pending',
       },
-      { $set: { status: 'accepted' } },
+      { $set: { status: 'accepted' }, $unset: { blockedBy: 1, blockedAt: 1 } },
       { new: true }
     ).populate(['requesterId', 'receiverId']);
 
@@ -273,7 +303,13 @@ router.post('/friends/:id/block', async (req, res) => {
         _id: req.params.id,
         $or: [{ requesterId: currentUserId }, { receiverId: currentUserId }],
       },
-      { $set: { status: 'blocked' } },
+      {
+        $set: {
+          status: 'blocked',
+          blockedBy: currentUserId,
+          blockedAt: new Date(),
+        },
+      },
       { new: true }
     ).populate(['requesterId', 'receiverId']);
 
@@ -310,6 +346,7 @@ router.delete('/friends/:id', async (req, res) => {
 router.get('/conversations', async (req, res) => {
   try {
     console.log('GET /social/conversations', { userId: req.user.userId });
+    const currentUserId = toObjectId(req.user.userId);
 
     const conversations = await Conversation.find({
       participants: req.user.userId,
@@ -317,7 +354,24 @@ router.get('/conversations', async (req, res) => {
       .populate('participants')
       .sort({ updatedAt: -1 });
 
-    res.json({ conversations: conversations.map(conversationSummary) });
+    const acceptedFriendships = await Friendship.find({
+      status: 'accepted',
+      $or: [{ requesterId: currentUserId }, { receiverId: currentUserId }],
+    });
+    const acceptedDirectFriendIds = new Set();
+
+    acceptedFriendships.forEach((friendship) => {
+      const requesterId = friendship.requesterId.toString();
+      const receiverId = friendship.receiverId.toString();
+      acceptedDirectFriendIds.add(requesterId === req.user.userId ? receiverId : requesterId);
+    });
+    const visibleConversations = conversations.filter((conversation) => {
+      const otherParticipantId = getOtherParticipantId(conversation, req.user.userId);
+
+      return !otherParticipantId || acceptedDirectFriendIds.has(idString(otherParticipantId));
+    });
+
+    res.json({ conversations: visibleConversations.map(conversationSummary) });
   } catch (error) {
     res.status(400).json({ message: error.message });
   }
@@ -341,7 +395,10 @@ router.post('/conversations/direct', async (req, res) => {
     const friendship = await findFriendship(currentUserId, friendId, 'accepted');
 
     if (!friendship) {
-      return res.status(403).json({ message: 'You can only chat with accepted friends.' });
+      const blockedFriendship = await findFriendship(currentUserId, friendId, 'blocked');
+      return res.status(403).json({
+        message: blockedFriendship ? 'This friend connection is blocked.' : 'You can only chat with accepted friends.',
+      });
     }
 
     let conversation = await Conversation.findOne({
@@ -377,6 +434,10 @@ router.get('/conversations/:id/messages', async (req, res) => {
       return res.status(404).json({ message: 'Conversation not found.' });
     }
 
+    if (!(await ensureDirectConversationNotBlocked(conversation, req.user.userId))) {
+      return res.status(403).json({ message: 'This friend connection is blocked.' });
+    }
+
     const messages = await Message.find({ conversationId: conversation._id })
       .populate('senderId')
       .sort({ createdAt: 1 });
@@ -405,6 +466,10 @@ router.post('/conversations/:id/messages', async (req, res) => {
 
     if (!conversation) {
       return res.status(404).json({ message: 'Conversation not found.' });
+    }
+
+    if (!(await ensureDirectConversationNotBlocked(conversation, req.user.userId))) {
+      return res.status(403).json({ message: 'This friend connection is blocked.' });
     }
 
     const message = await Message.create({
