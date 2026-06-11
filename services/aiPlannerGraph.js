@@ -292,6 +292,64 @@ function isSearchRadiusPrompt(message) {
     (/\bincrease\b/i.test(text) && /\b(radius|search|area|distance|range)\b/i.test(text));
 }
 
+function isOptionsMessage(message) {
+  return /\b(option|options|suggestion|suggestions|choices|ideas|find|search)\b/i.test(message);
+}
+
+function isPlanningMessage(message) {
+  return /\b(plan|coffee|food|lunch|dinner|breakfast|hangout|meet|meeting|movie|activity|option|options|suggestion|suggestions)\b/i.test(message);
+}
+
+function defaultDurationMinutesForActivity(activityType) {
+  return activityType === 'coffee' ? 60 : 120;
+}
+
+function mentionsActivityType(message) {
+  return /\b(coffee|food|lunch|dinner|breakfast|restaurant|cafe|bar|activity|outdoors|park|movie)\b/i.test(message);
+}
+
+function planningIntentSnapshot(intent, participantIds) {
+  return {
+    participantIds,
+    dateFrom: intent.dateFrom,
+    dateTo: intent.dateTo,
+    durationMinutes: intent.durationMinutes,
+    activityType: intent.activityType,
+    searchRadiusMeters: intent.searchRadiusMeters,
+    title: intent.title,
+  };
+}
+
+function mergePendingIntent({ intent, participantIds, pendingIntent, userMessage }) {
+  const pending = pendingIntent ?? {};
+
+  return {
+    ...intent,
+    participantIds: participantIds.length ? participantIds : pending.participantIds ?? [],
+    dateFrom: intent.dateFrom ?? pending.dateFrom ?? null,
+    dateTo: intent.dateTo ?? pending.dateTo ?? null,
+    durationMinutes: intent.durationMinutes ?? pending.durationMinutes ?? null,
+    activityType: mentionsActivityType(userMessage)
+      ? intent.activityType
+      : pending.activityType ?? intent.activityType,
+    searchRadiusMeters: intent.searchRadiusMeters ?? pending.searchRadiusMeters ?? null,
+    title: intent.title ?? pending.title ?? null,
+  };
+}
+
+function hasSuggestionInput(intent) {
+  return Boolean(
+    intent.participantIds?.length &&
+    intent.dateFrom &&
+    intent.dateTo &&
+    intent.durationMinutes
+  );
+}
+
+function looksLikeCompletionClaim(message) {
+  return /\b(scheduled|created|creating|booked|booking|set up|done|confirmed)\b/i.test(message);
+}
+
 function inferSelectedSuggestionIndex(message, parsedIndex) {
   if (Number.isInteger(parsedIndex) && parsedIndex >= 0) {
     return parsedIndex;
@@ -514,6 +572,7 @@ async function plannerNode(state) {
   const lastSuggestions = conversation.agentState?.lastSuggestions ?? [];
   const lastPlans = conversation.agentState?.lastPlans ?? [];
   const lastSuggestionRequest = conversation.agentState?.lastSuggestionRequest ?? null;
+  const storedPendingIntent = conversation.agentState?.pendingIntent ?? null;
   const pendingCancelPlan = conversation.agentState?.pendingCancelPlan ?? null;
   const isConfirmingSuggestion = isConfirmationMessage(userMessage) && lastSuggestions.length > 0;
   const requestedSearchRadiusMeters = getRequestedSearchRadiusMeters(userMessage, intent.searchRadiusMeters);
@@ -532,6 +591,53 @@ async function plannerNode(state) {
         reply: `I could not find ${unresolvedNames.join(', ')} in your accepted friends. Which friend should I include?`,
       },
     };
+  }
+
+  const mergedIntent = mergePendingIntent({
+    intent,
+    participantIds,
+    pendingIntent: storedPendingIntent,
+    userMessage,
+  });
+
+  if (
+    !mergedIntent.durationMinutes &&
+    mergedIntent.participantIds.length &&
+    mergedIntent.dateFrom &&
+    mergedIntent.dateTo
+  ) {
+    mergedIntent.durationMinutes = defaultDurationMinutesForActivity(mergedIntent.activityType);
+  }
+
+  if (
+    isOptionsMessage(userMessage) &&
+    !isCancelPlanMessage(userMessage) &&
+    (storedPendingIntent || hasSuggestionInput(mergedIntent))
+  ) {
+    intent.action = 'suggest_hangout';
+  }
+
+  if (
+    intent.action === 'general_reply' &&
+    (storedPendingIntent || isPlanningMessage(userMessage)) &&
+    !isListPlansMessage(userMessage) &&
+    !isCancelPlanMessage(userMessage)
+  ) {
+    intent.action = isOptionsMessage(userMessage) || hasSuggestionInput(mergedIntent)
+      ? 'suggest_hangout'
+      : 'ask_question';
+  }
+
+  if (intent.action === 'ask_question' && storedPendingIntent && hasSuggestionInput(mergedIntent)) {
+    intent.action = 'suggest_hangout';
+  }
+
+  if (
+    looksLikeCompletionClaim(intent.reply) &&
+    intent.action !== 'create_plan' &&
+    intent.action !== 'cancel_plan'
+  ) {
+    intent.reply = 'I have the details so far. I can find a few options next.';
   }
 
   if (pendingCancelPlan && isConfirmationMessage(userMessage)) {
@@ -704,32 +810,36 @@ async function plannerNode(state) {
 
   if (
     intent.action === 'ask_question' ||
-    !participantIds.length ||
-    !intent.dateFrom ||
-    !intent.dateTo ||
-    !intent.durationMinutes
+    !mergedIntent.participantIds.length ||
+    !mergedIntent.dateFrom ||
+    !mergedIntent.dateTo ||
+    !mergedIntent.durationMinutes
   ) {
     return {
       result: {
         reply: intent.reply || 'Who should I include, and when should I look for a free time?',
+        nextAgentState: {
+          ...conversation.agentState,
+          pendingIntent: planningIntentSnapshot(mergedIntent, mergedIntent.participantIds),
+        },
       },
     };
   }
 
   const suggestionResult = await suggestHangout(userId, {
-    participantIds,
-    dateFrom: intent.dateFrom,
-    dateTo: intent.dateTo,
-    durationMinutes: intent.durationMinutes,
-    activityType: intent.activityType,
+    participantIds: mergedIntent.participantIds,
+    dateFrom: mergedIntent.dateFrom,
+    dateTo: mergedIntent.dateTo,
+    durationMinutes: mergedIntent.durationMinutes,
+    activityType: mergedIntent.activityType,
     ...(requestedSearchRadiusMeters !== null ? { searchRadiusMeters: requestedSearchRadiusMeters } : {}),
   });
   const lastSuggestionRequestForState = {
-    participantIds,
-    dateFrom: intent.dateFrom,
-    dateTo: intent.dateTo,
-    durationMinutes: intent.durationMinutes,
-    activityType: intent.activityType,
+    participantIds: mergedIntent.participantIds,
+    dateFrom: mergedIntent.dateFrom,
+    dateTo: mergedIntent.dateTo,
+    durationMinutes: mergedIntent.durationMinutes,
+    activityType: mergedIntent.activityType,
     searchRadiusMeters: suggestionResult.searchRadiusMeters,
   };
 

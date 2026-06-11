@@ -1,14 +1,33 @@
 import { cert, getApps, initializeApp } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
 
+function normalizeEnvValue(value) {
+  if (!value) {
+    return value;
+  }
+
+  const trimmed = value.trim();
+  const quote = trimmed[0];
+
+  if ((quote === '"' || quote === "'") && trimmed[trimmed.length - 1] === quote) {
+    return trimmed.slice(1, -1);
+  }
+
+  return trimmed;
+}
+
+function normalizePrivateKey(value) {
+  return normalizeEnvValue(value)?.replace(/\\n/g, '\n');
+}
+
 function parseServiceAccount() {
   if (process.env.FIREBASE_SERVICE_ACCOUNT_BASE64) {
-    const json = Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64, 'base64').toString('utf8');
+    const json = Buffer.from(normalizeEnvValue(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64), 'base64').toString('utf8');
     return JSON.parse(json);
   }
 
   if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-    return JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+    return JSON.parse(normalizeEnvValue(process.env.FIREBASE_SERVICE_ACCOUNT_JSON));
   }
 
   if (
@@ -17,9 +36,9 @@ function parseServiceAccount() {
     process.env.FIREBASE_PRIVATE_KEY
   ) {
     return {
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+      projectId: normalizeEnvValue(process.env.FIREBASE_PROJECT_ID),
+      clientEmail: normalizeEnvValue(process.env.FIREBASE_CLIENT_EMAIL),
+      privateKey: normalizePrivateKey(process.env.FIREBASE_PRIVATE_KEY),
     };
   }
 
