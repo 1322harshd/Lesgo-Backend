@@ -262,6 +262,24 @@ router.get('/friends/requests', async (req, res) => {
   }
 });
 
+//route for getting people the current user has blocked
+router.get('/friends/blocked', async (req, res) => {
+  try {
+    const currentUserId = toObjectId(req.user.userId);
+    const friendships = await Friendship.find({
+      status: 'blocked',
+      blockedBy: currentUserId,
+      $or: [{ requesterId: currentUserId }, { receiverId: currentUserId }],
+    }).populate(['requesterId', 'receiverId']);
+
+    res.json({
+      friends: friendships.map((friendship) => friendshipSummary(friendship, req.user.userId)),
+    });
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+});
+
 //route for accepting friend request(only a request receiver can accept request otherwise it will send an error)
 router.post('/friends/:id/accept', async (req, res) => {
   try {
@@ -315,6 +333,31 @@ router.post('/friends/:id/block', async (req, res) => {
 
     if (!friendship) {
       return res.status(404).json({ message: 'Friendship not found.' });
+    }
+
+    res.json({ friendship: friendshipSummary(friendship, req.user.userId) });
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+});
+
+//route for unblocking a person previously blocked by the current user
+router.post('/friends/:id/unblock', async (req, res) => {
+  try {
+    const currentUserId = toObjectId(req.user.userId);
+    const friendship = await Friendship.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        status: 'blocked',
+        blockedBy: currentUserId,
+        $or: [{ requesterId: currentUserId }, { receiverId: currentUserId }],
+      },
+      { $set: { status: 'accepted' }, $unset: { blockedBy: 1, blockedAt: 1 } },
+      { new: true }
+    ).populate(['requesterId', 'receiverId']);
+
+    if (!friendship) {
+      return res.status(404).json({ message: 'Blocked friendship not found.' });
     }
 
     res.json({ friendship: friendshipSummary(friendship, req.user.userId) });
